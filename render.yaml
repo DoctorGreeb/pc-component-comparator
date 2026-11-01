@@ -9,8 +9,9 @@ services:
       - key: FRONTEND_ORIGINS
         value: https://pc-component-comparator.onrender.com
 
-  - type: static
+  - type: web
     name: pc-component-comparator
+    runtime: static
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
