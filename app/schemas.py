@@ -129,6 +129,14 @@ class UpdateDatabaseRequest(BaseModel):
         True,
         description="Искать картинки в интернете, если нет донора",
     )
+    google_api_key: Optional[str] = Field(
+        None,
+        description="Google Custom Search API key",
+    )
+    google_cx: Optional[str] = Field(
+        None,
+        description="Google Programmable Search Engine ID (cx)",
+    )
 
 
 class UpdateDatabaseResponse(BaseModel):
