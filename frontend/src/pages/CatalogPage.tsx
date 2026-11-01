@@ -56,6 +56,9 @@ export function CatalogPage({ selected, onToggle }: Props) {
     setPriceMin('')
     setPriceMax('')
     setPage(0)
+  }, [activeCategory])
+
+  useEffect(() => {
     const isMobile = window.matchMedia('(max-width: 900px)').matches
     if (isMobile && !mobileFiltersOpen) {
       setFacets(null)
