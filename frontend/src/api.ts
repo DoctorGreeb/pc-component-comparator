@@ -187,6 +187,8 @@ export async function updateDatabaseWithProgress(
     imageTimeoutSec?: number;
     maxWebImages?: number;
     webImages?: boolean;
+    googleApiKey?: string;
+    googleCx?: string;
   },
   onProgress: (ev: ProgressEvent) => void,
 ): Promise<UpdateResult> {
@@ -201,6 +203,8 @@ export async function updateDatabaseWithProgress(
       image_timeout_sec: options.imageTimeoutSec ?? 15,
       max_web_images: options.maxWebImages ?? 100,
       web_images: options.webImages !== false,
+      google_api_key: options.googleApiKey || undefined,
+      google_cx: options.googleCx || undefined,
     }),
   });
   if (!res.ok) {
