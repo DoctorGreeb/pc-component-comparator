@@ -19,7 +19,7 @@ from app.services.free_loader import (
 )
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="PC Component Comparator", version="0.4.5")
+app = FastAPI(title="PC Component Comparator", version="0.4.6")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 import_routes.register(app)
 
@@ -86,121 +86,23 @@ def _component_to_list_item(c):
         min_price=min_p, old_price=old_p, product_url=product_url, specs=_parse_specs(c.specs))
 
 @app.get("/")
-def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.5"}
+def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.6"}
 @app.get("/health")
 def health(): return {"status": "ok"}
-
-@app.post("/update-database", response_model=schemas.UpdateDatabaseResponse)
-async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(None), db: Session = Depends(get_db)):
-    for cat in DEFAULT_CATEGORIES:
-        if not db.query(models.Category).filter(models.Category.name == cat["name"]).first(): db.add(models.Category(**cat))
-    for store in DEFAULT_STORES:
-        if not db.query(models.Store).filter(models.Store.name == store["name"]).first(): db.add(models.Store(**store))
-    db.commit()
-    total_categories = db.query(models.Category).count()
-    existing_components = db.query(models.Component).count()
-    api_key = body.api_key if body else None
-    economy = bool(body.economy) if body else False
-    free_only = bool(body.free_only) if body else False
-    yml_url = body.yml_url if body else None
-
-    if free_only or not get_api_key(api_key):
-        try:
-            free_stats = await load_free_sources(db, yml_url=yml_url)
-        except Exception as e:
-            return schemas.UpdateDatabaseResponse(status="partial", message="Категории готовы. Бесплатная загрузка не удалась.",
-                note=str(e), components_added=0, categories_ready=total_categories, economy=economy, credits_exhausted=False)
-        notes = []
-        for name, st in (free_stats.get("sources") or {}).items():
-            if isinstance(st, dict) and st.get("error"): notes.append(f"{name}: {st['error']}")
-            elif isinstance(st, dict): notes.append(f"{name}: +{st.get('components_added', 0)}")
-        return schemas.UpdateDatabaseResponse(status="ok",
-            message=free_stats.get("message") or f"Бесплатная подгрузка: +{free_stats.get('components_added', 0)}",
-            note=(" · ".join(notes) if notes else "PCPart + GPU Ark") + ("" if free_only else " | Живые цены РФ — с ReefAPI."),
-            components_added=int(free_stats.get("components_added") or 0),
-            categories_ready=total_categories, economy=economy, credits_exhausted=False)
-
-    sources = (body.sources if body and body.sources else None) or ["dns", "yandex_market", "wildberries"]
-    total_added, notes, exhausted = 0, [], False
-    try:
-        if "dns" in sources:
-            stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
-            total_added += int(stats.get("components_added") or 0)
-            notes.append(f"DNS: +{stats.get('components_added', 0)}")
-            if stats.get("stopped_reason"): exhausted = True
-        extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
-        if extra_sources and not exhausted:
-            extra = await load_extra_stores(db, api_key=api_key, economy=economy, sources=extra_sources)
-            total_added += int(extra.get("components_added") or 0)
-            for name, st in (extra.get("sources") or {}).items():
-                if isinstance(st, dict):
-                    notes.append(f"{name}: +{st.get('components_added', 0)}" if "error" not in st else f"{name}: ошибка")
-        if "free" in sources:
-            free_stats = await load_free_sources(db, yml_url=yml_url)
-            total_added += int(free_stats.get("components_added") or 0)
-            notes.append(f"free: +{free_stats.get('components_added', 0)}")
-    except CreditsExhaustedError as e:
-        return schemas.UpdateDatabaseResponse(status="credits_exhausted", message=str(e),
-            note=f"Сохранены товары ({existing_components} шт.).", components_added=total_added,
-            categories_ready=total_categories, economy=economy, credits_exhausted=True)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Ошибка загрузки: {e}")
-
-    try:
-        enrich = await enrich_missing_media(db, web_images=True, max_web=60)
-        notes.append(
-            f"enrich: img {enrich.get('images_filled', 0)} / "
-            f"specs {enrich.get('specs_filled', 0)} / "
-            f"web {enrich.get('web_filled', 0)}"
-        )
-    except Exception as e:
-        notes.append(f"enrich: {e}")
-
-    return schemas.UpdateDatabaseResponse(status="credits_exhausted" if exhausted else "ok",
-        message=f"Загружено: +{total_added}.", note=" · ".join(notes) if notes else None,
-        components_added=total_added, categories_ready=total_categories, economy=economy, credits_exhausted=exhausted)
-
-@app.post("/update-database-free", response_model=schemas.UpdateDatabaseResponse)
-async def update_database_free(body: Optional[schemas.UpdateDatabaseRequest] = Body(None), db: Session = Depends(get_db)):
-    for cat in DEFAULT_CATEGORIES:
-        if not db.query(models.Category).filter(models.Category.name == cat["name"]).first(): db.add(models.Category(**cat))
-    for store in DEFAULT_STORES:
-        if not db.query(models.Store).filter(models.Store.name == store["name"]).first(): db.add(models.Store(**store))
-    db.commit()
-    total_categories = db.query(models.Category).count()
-    try:
-        free_stats = await load_free_sources(db, yml_url=(body.yml_url if body else None))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    notes = []
-    for name, st in (free_stats.get("sources") or {}).items():
-        if isinstance(st, dict) and st.get("error"): notes.append(f"{name}: {st['error']}")
-        elif isinstance(st, dict): notes.append(f"{name}: +{st.get('components_added', 0)}")
-    return schemas.UpdateDatabaseResponse(status="ok",
-        message=free_stats.get("message") or f"+{free_stats.get('components_added', 0)}",
-        note=" · ".join(notes) if notes else "open data",
-        components_added=int(free_stats.get("components_added") or 0),
-        categories_ready=total_categories, economy=False, credits_exhausted=False)
-
 
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-
 @app.post("/update-database-stream")
-async def update_database_stream(
-    body: Optional[schemas.UpdateDatabaseRequest] = Body(None),
-    db: Session = Depends(get_db),
-):
-    """SSE: события {pct, op, ...} и финал {pct:100, op, result}."""
-
+async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] = Body(None), db: Session = Depends(get_db)):
     api_key = body.api_key if body else None
     economy = bool(body.economy) if body else False
     free_only = bool(body.free_only) if body else False
     yml_url = body.yml_url if body else None
-    sources = (body.sources if body and body.sources else None) or [
-        "dns", "yandex_market", "wildberries"
-    ]
+    image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
+    max_web_images = max(0, min(500, int(getattr(body, "max_web_images", None) or 100))) if body else 100
+    web_images = bool(getattr(body, "web_images", True)) if body else True
+    sources = (body.sources if body and body.sources else None) or ["dns", "yandex_market", "wildberries"]
 
     async def generate():
         total_added = 0
@@ -216,49 +118,41 @@ async def update_database_stream(
                     db.add(models.Store(**store))
             db.commit()
             total_categories = db.query(models.Category).count()
-
             use_free = free_only or not get_api_key(api_key)
+
             if use_free:
-                yield _sse({"pct": 12, "op": "Загрузка PCPartPicker dataset (характеристики)…"})
+                yield _sse({"pct": 12, "op": "Загрузка PCPartPicker dataset…"})
                 try:
                     r1 = await load_pcpart_dataset(db)
                     total_added += int(r1.get("components_added") or 0)
                     notes.append(f"pcpart: +{r1.get('components_added', 0)}")
-                    if r1.get("error"):
-                        notes.append(f"pcpart error: {r1['error']}")
                 except Exception as e:
                     notes.append(f"pcpart: {e}")
-
-                yield _sse({"pct": 40, "op": "Загрузка спецификаций GPU Ark…"})
+                yield _sse({"pct": 40, "op": "Загрузка GPU Ark…"})
                 try:
                     r2 = await load_gpu_ark(db)
                     total_added += int(r2.get("components_added") or 0)
                     notes.append(f"gpu_ark: +{r2.get('components_added', 0)}")
                 except Exception as e:
                     notes.append(f"gpu_ark: {e}")
-
                 if yml_url and str(yml_url).strip():
-                    yield _sse({"pct": 55, "op": "Импорт YML-фида магазина…"})
+                    yield _sse({"pct": 55, "op": "Импорт YML…"})
                     try:
                         r3 = await load_yml_feed(db, str(yml_url).strip())
                         total_added += int(r3.get("components_added") or 0)
-                        notes.append(f"yml: +{r3.get('components_added', 0)}")
                     except Exception as e:
                         notes.append(f"yml: {e}")
-
-                yield _sse({"pct": 70, "op": "Обогащение: доноры и поиск картинок…"})
+                yield _sse({"pct": 70, "op": f"Обогащение (таймаут картинки {image_timeout_sec} с)…"})
                 try:
                     import asyncio
                     q: asyncio.Queue = asyncio.Queue()
-
                     async def _on_prog(msg, pct=None):
                         await q.put(msg)
-
                     async def _runner():
                         return await enrich_missing_media(
-                            db, web_images=True, max_web=100, on_progress=_on_prog
+                            db, web_images=web_images, max_web=max_web_images,
+                            image_timeout_sec=image_timeout_sec, on_progress=_on_prog,
                         )
-
                     task = asyncio.create_task(_runner())
                     while not task.done() or not q.empty():
                         try:
@@ -270,85 +164,38 @@ async def update_database_stream(
                                     yield _sse({"pct": 78, "op": await q.get()})
                                 break
                     enrich = await task
-                    notes.append(
-                        f"enrich img={enrich.get('images_filled', 0)} "
-                        f"specs={enrich.get('specs_filled', 0)} "
-                        f"web={enrich.get('web_filled', 0)}"
-                    )
+                    notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
                 except Exception as e:
                     notes.append(f"enrich: {e}")
-
-                yield _sse({"pct": 95, "op": "Завершение…"})
-                result = {
-                    "status": "ok",
-                    "message": f"Бесплатная подгрузка: +{total_added}.",
-                    "note": " · ".join(notes) if notes else "open data",
-                    "components_added": total_added,
-                    "categories_ready": total_categories,
-                    "economy": False,
-                    "credits_exhausted": False,
-                }
+                result = {"status": "ok", "message": f"Бесплатная подгрузка: +{total_added}.", "note": " · ".join(notes), "components_added": total_added, "categories_ready": total_categories, "economy": False, "credits_exhausted": False}
                 yield _sse({"pct": 100, "op": "Готово", "result": result})
                 return
 
             try:
                 if "dns" in sources:
-                    yield _sse({"pct": 15, "op": "Загрузка каталога DNS через ReefAPI…"})
-                    stats = await load_dns_catalog(
-                        db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy
-                    )
+                    yield _sse({"pct": 15, "op": "Загрузка DNS…"})
+                    stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
                     total_added += int(stats.get("components_added") or 0)
                     notes.append(f"DNS: +{stats.get('components_added', 0)}")
                     if stats.get("stopped_reason"):
                         exhausted = True
-
                 extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
                 if extra_sources and not exhausted:
-                    yield _sse({"pct": 50, "op": "Загрузка Яндекс Маркет / Wildberries…"})
-                    extra = await load_extra_stores(
-                        db, api_key=api_key, economy=economy, sources=extra_sources
-                    )
+                    yield _sse({"pct": 50, "op": "Маркет / Wildberries…"})
+                    extra = await load_extra_stores(db, api_key=api_key, economy=economy, sources=extra_sources)
                     total_added += int(extra.get("components_added") or 0)
-                    for name, st in (extra.get("sources") or {}).items():
-                        if isinstance(st, dict):
-                            notes.append(
-                                f"{name}: +{st.get('components_added', 0)}"
-                                if "error" not in st
-                                else f"{name}: ошибка"
-                            )
-
-                if "free" in sources and not exhausted:
-                    yield _sse({"pct": 65, "op": "Доп. open-data источники…"})
-                    free_stats = await load_free_sources(db, yml_url=yml_url)
-                    total_added += int(free_stats.get("components_added") or 0)
-                    notes.append(f"free: +{free_stats.get('components_added', 0)}")
-
             except CreditsExhaustedError as e:
-                result = {
-                    "status": "credits_exhausted",
-                    "message": str(e),
-                    "note": " · ".join(notes) if notes else None,
-                    "components_added": total_added,
-                    "categories_ready": total_categories,
-                    "economy": economy,
-                    "credits_exhausted": True,
-                }
-                yield _sse({"pct": 100, "op": "Кредиты закончились", "result": result})
+                yield _sse({"pct": 100, "op": "Кредиты закончились", "result": {"status": "credits_exhausted", "message": str(e), "components_added": total_added, "categories_ready": total_categories, "economy": economy, "credits_exhausted": True}})
                 return
 
-            yield _sse({"pct": 80, "op": "Обогащение картинок и характеристик…"})
+            yield _sse({"pct": 80, "op": f"Обогащение (таймаут {image_timeout_sec} с)…"})
             try:
                 import asyncio
                 q: asyncio.Queue = asyncio.Queue()
-
                 async def _on_prog2(msg, pct=None):
                     await q.put(msg)
-
                 async def _runner2():
-                    return await enrich_missing_media(
-                        db, web_images=True, max_web=60, on_progress=_on_prog2
-                    )
-
+                    return await enrich_missing_media(db, web_images=web_images, max_web=max_web_images, image_timeout_sec=image_timeout_sec, on_progress=_on_prog2)
                 task = asyncio.create_task(_runner2())
                 while not task.done() or not q.empty():
                     try:
@@ -360,48 +207,70 @@ async def update_database_stream(
                                 yield _sse({"pct": 88, "op": await q.get()})
                             break
                 enrich = await task
-                notes.append(
-                    f"enrich: img {enrich.get('images_filled', 0)} / "
-                    f"specs {enrich.get('specs_filled', 0)} / "
-                    f"web {enrich.get('web_filled', 0)}"
-                )
+                notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
             except Exception as e:
                 notes.append(f"enrich: {e}")
 
-            result = {
-                "status": "credits_exhausted" if exhausted else "ok",
-                "message": f"Загружено: +{total_added}.",
-                "note": " · ".join(notes) if notes else None,
-                "components_added": total_added,
-                "categories_ready": total_categories,
-                "economy": economy,
-                "credits_exhausted": exhausted,
-            }
+            result = {"status": "credits_exhausted" if exhausted else "ok", "message": f"Загружено: +{total_added}.", "note": " · ".join(notes) if notes else None, "components_added": total_added, "categories_ready": total_categories, "economy": economy, "credits_exhausted": exhausted}
             yield _sse({"pct": 100, "op": "Готово", "result": result})
         except Exception as e:
-            yield _sse({
-                "pct": 100,
-                "op": "Ошибка",
-                "error": str(e),
-                "result": {
-                    "status": "error",
-                    "message": str(e),
-                    "components_added": total_added,
-                    "categories_ready": 0,
-                    "credits_exhausted": False,
-                },
-            })
+            yield _sse({"pct": 100, "op": "Ошибка", "error": str(e), "result": {"status": "error", "message": str(e), "components_added": total_added, "categories_ready": 0, "credits_exhausted": False}})
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
+@app.post("/update-database", response_model=schemas.UpdateDatabaseResponse)
+async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(None), db: Session = Depends(get_db)):
+    for cat in DEFAULT_CATEGORIES:
+        if not db.query(models.Category).filter(models.Category.name == cat["name"]).first(): db.add(models.Category(**cat))
+    for store in DEFAULT_STORES:
+        if not db.query(models.Store).filter(models.Store.name == store["name"]).first(): db.add(models.Store(**store))
+    db.commit()
+    total_categories = db.query(models.Category).count()
+    existing_components = db.query(models.Component).count()
+    api_key = body.api_key if body else None
+    economy = bool(body.economy) if body else False
+    free_only = bool(body.free_only) if body else False
+    yml_url = body.yml_url if body else None
+    image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
+    if free_only or not get_api_key(api_key):
+        try:
+            free_stats = await load_free_sources(db, yml_url=yml_url, image_timeout_sec=image_timeout_sec)
+        except Exception as e:
+            return schemas.UpdateDatabaseResponse(status="partial", message=str(e), components_added=0, categories_ready=total_categories, economy=economy)
+        return schemas.UpdateDatabaseResponse(status="ok", message=free_stats.get("message") or "ok", components_added=int(free_stats.get("components_added") or 0), categories_ready=total_categories, economy=economy)
+    sources = (body.sources if body and body.sources else None) or ["dns", "yandex_market", "wildberries"]
+    total_added, notes, exhausted = 0, [], False
+    try:
+        if "dns" in sources:
+            stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
+            total_added += int(stats.get("components_added") or 0)
+            if stats.get("stopped_reason"): exhausted = True
+        extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
+        if extra_sources and not exhausted:
+            extra = await load_extra_stores(db, api_key=api_key, economy=economy, sources=extra_sources)
+            total_added += int(extra.get("components_added") or 0)
+    except CreditsExhaustedError as e:
+        return schemas.UpdateDatabaseResponse(status="credits_exhausted", message=str(e), components_added=total_added, categories_ready=total_categories, economy=economy, credits_exhausted=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    try:
+        enrich = await enrich_missing_media(db, web_images=True, max_web=60, image_timeout_sec=image_timeout_sec)
+        notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
+    except Exception as e:
+        notes.append(str(e))
+    return schemas.UpdateDatabaseResponse(status="credits_exhausted" if exhausted else "ok", message=f"Загружено: +{total_added}.", note=" · ".join(notes) if notes else None, components_added=total_added, categories_ready=total_categories, economy=economy, credits_exhausted=exhausted)
+
+@app.post("/update-database-free", response_model=schemas.UpdateDatabaseResponse)
+async def update_database_free(body: Optional[schemas.UpdateDatabaseRequest] = Body(None), db: Session = Depends(get_db)):
+    for cat in DEFAULT_CATEGORIES:
+        if not db.query(models.Category).filter(models.Category.name == cat["name"]).first(): db.add(models.Category(**cat))
+    for store in DEFAULT_STORES:
+        if not db.query(models.Store).filter(models.Store.name == store["name"]).first(): db.add(models.Store(**store))
+    db.commit()
+    total_categories = db.query(models.Category).count()
+    image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
+    free_stats = await load_free_sources(db, yml_url=(body.yml_url if body else None), image_timeout_sec=image_timeout_sec)
+    return schemas.UpdateDatabaseResponse(status="ok", message=free_stats.get("message") or "ok", components_added=int(free_stats.get("components_added") or 0), categories_ready=total_categories)
 
 @app.get("/categories", response_model=list[schemas.Category])
 def list_categories(db: Session = Depends(get_db)):
@@ -444,7 +313,6 @@ def list_components(category: Optional[str] = Query(None), q: Optional[str] = Qu
         min_p = min(prices) if prices else None
         name = (c.name or "").lower()
         if sort == "price_desc": return (min_p is None, -(min_p or 0), name)
-        if sort in ("name_asc", "name_desc"): return (name,)
         return (min_p is None, min_p or 0, name)
     if sort == "name_desc": filtered.sort(key=lambda c: (c.name or "").lower(), reverse=True)
     else: filtered.sort(key=sort_key)
@@ -492,8 +360,7 @@ def get_component(component_id: int, db: Session = Depends(get_db)):
 def compare_components(ids: str = Query(...), db: Session = Depends(get_db)):
     try: id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
     except ValueError: raise HTTPException(status_code=400, detail="Некорректный формат ids")
-    if len(id_list) < 2: raise HTTPException(status_code=400, detail="Нужно минимум 2")
-    if len(id_list) > 4: raise HTTPException(status_code=400, detail="Максимум 4")
+    if len(id_list) < 2 or len(id_list) > 4: raise HTTPException(status_code=400, detail="Нужно 2–4")
     components = db.query(models.Component).options(joinedload(models.Component.category), joinedload(models.Component.prices).joinedload(models.Price.store)).filter(models.Component.id.in_(id_list)).all()
     if len(components) != len(id_list): raise HTTPException(status_code=404, detail="Не найдены")
     by_id = {c.id: c for c in components}
@@ -553,11 +420,9 @@ def import_catalog(body: schemas.CatalogImportRequest, db: Session = Depends(get
             existing_price.product_url = item.product_url or existing_price.product_url
             updated += 1
         else:
-            comp = models.Component(category_id=cat.id, name=item.name, brand=item.brand, description=item.description,
-                image_url=item.image_url, specs=specs_json)
+            comp = models.Component(category_id=cat.id, name=item.name, brand=item.brand, description=item.description, image_url=item.image_url, specs=specs_json)
             db.add(comp); db.flush()
-            db.add(models.Price(component_id=comp.id, store_id=store.id, price=float(item.price) if item.price is not None else None,
-                old_price=item.old_price, in_stock=True, product_url=item.product_url, external_id=str(external_id)))
+            db.add(models.Price(component_id=comp.id, store_id=store.id, price=float(item.price) if item.price is not None else None, old_price=item.old_price, in_stock=True, product_url=item.product_url, external_id=str(external_id)))
             added += 1
     db.commit()
     return {"status": "ok", "added": added, "updated": updated, "message": f"Импорт: +{added}, обновлено {updated}"}
