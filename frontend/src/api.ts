@@ -72,9 +72,11 @@ export interface UpdateResult {
   message: string;
   note?: string;
   components_added: number;
-  categories_ready: number;
+  categories_ready?: number;
   economy?: boolean;
   credits_exhausted?: boolean;
+  added?: number;
+  updated?: number;
 }
 
 export interface ProgressEvent {
@@ -154,7 +156,6 @@ export async function updateDatabase(
   return res.json();
 }
 
-/** Бесплатная подгрузка без ReefAPI-ключа */
 export async function updateDatabaseFree(ymlUrl?: string): Promise<UpdateResult> {
   const res = await fetch(`${API_BASE}/update-database-free`, {
     method: 'POST',
@@ -168,38 +169,11 @@ export async function updateDatabaseFree(ymlUrl?: string): Promise<UpdateResult>
   return res.json();
 }
 
-/**
- * Обновление базы с live-прогрессом (SSE).
- * onProgress вызывается на каждом шаге: { pct, op }.
- */
-export async function updateDatabaseWithProgress(
-  options: {
-    apiKey?: string;
-    economy?: boolean;
-    freeOnly?: boolean;
-    ymlUrl?: string;
-  },
+async function readSseStream(
+  res: Response,
   onProgress: (ev: ProgressEvent) => void,
 ): Promise<UpdateResult> {
-  const res = await fetch(`${API_BASE}/update-database-stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({
-      api_key: options.apiKey || undefined,
-      economy: !!options.economy,
-      free_only: !!options.freeOnly,
-      yml_url: options.ymlUrl || undefined,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка обновления');
-  }
-  if (!res.body) {
-    throw new Error('Нет тела ответа (stream)');
-  }
-
+  if (!res.body) throw new Error('Нет тела ответа (stream)');
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -221,9 +195,7 @@ export async function updateDatabaseWithProgress(
         const data = JSON.parse(line.slice(5).trim()) as ProgressEvent;
         onProgress(data);
         if (data.result) finalResult = data.result;
-        if (data.error && !data.result) {
-          throw new Error(data.error);
-        }
+        if (data.error && !data.result) throw new Error(data.error);
       } catch (e) {
         if (e instanceof SyntaxError) continue;
         throw e;
@@ -231,10 +203,50 @@ export async function updateDatabaseWithProgress(
     }
   }
 
-  if (!finalResult) {
-    throw new Error('Обновление завершилось без результата');
-  }
+  if (!finalResult) throw new Error('Операция завершилась без результата');
   return finalResult;
+}
+
+export async function updateDatabaseWithProgress(
+  options: {
+    apiKey?: string;
+    economy?: boolean;
+    freeOnly?: boolean;
+    ymlUrl?: string;
+  },
+  onProgress: (ev: ProgressEvent) => void,
+): Promise<UpdateResult> {
+  const res = await fetch(`${API_BASE}/update-database-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({
+      api_key: options.apiKey || undefined,
+      economy: !!options.economy,
+      free_only: !!options.freeOnly,
+      yml_url: options.ymlUrl || undefined,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка обновления');
+  }
+  return readSseStream(res, onProgress);
+}
+
+export async function importCatalogWithProgress(
+  items: unknown[],
+  onProgress: (ev: ProgressEvent) => void,
+): Promise<UpdateResult> {
+  const res = await fetch(`${API_BASE}/catalog/import-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка импорта');
+  }
+  return readSseStream(res, onProgress);
 }
 
 export async function exportCatalog(): Promise<{ count: number; items: unknown[] }> {
