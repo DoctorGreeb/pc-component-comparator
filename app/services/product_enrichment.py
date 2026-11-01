@@ -94,14 +94,13 @@ async def fetch_ddg_abstract(name: str) -> dict[str, Any] | None:
 
 async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
-    # DuckDuckGo markup changes often; locate result anchors independently of attribute order.
+    # Parse anchors independently of nested result-container markup.
     try:
         response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
         if response.status_code == 200:
             html = response.text
-            for match in re.finditer(r"(?is)<a\\b(?=[^>]*class=['\\"][^'\\"]*result__a)([^>]*)>(.*?)</a>", html):
-                attrs = match.group(1)
-                href_match = re.search(r"""(?is)href=['\\"]([^'\\"]+)['\\"]""", attrs)
+            for match in re.finditer(r'(?is)<a\\b(?=[^>]*class="[^"]*result__a)([^>]*)>(.*?)</a>', html):
+                href_match = re.search(r'href="([^"]+)"', match.group(1))
                 if not href_match:
                     continue
                 href = unescape(href_match.group(1))
@@ -112,9 +111,8 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
                     href = "https:" + href
                 if not href.startswith("http"):
                     continue
-                # Search-result snippet is normally adjacent to its title anchor.
                 vicinity = html[max(0, match.start() - 500):min(len(html), match.end() + 1800)]
-                snippet_match = re.search(r"(?is)class=['\\"][^'\\"]*result__snippet[^'\\"]*['\\"][^>]*>(.*?)</(?:a|td|div)", vicinity)
+                snippet_match = re.search(r'(?is)class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|td|div)', vicinity)
                 results.append({
                     "title": _plain_html(match.group(2)),
                     "snippet": _plain_html(snippet_match.group(1))[:1000] if snippet_match else "",
@@ -126,8 +124,8 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
     try:
         response = await client.get("https://www.bing.com/search", params={"q": query})
         if response.status_code == 200:
-            for block in re.findall(r"(?is)<li[^>]+class=['\\"][^'\\"]*b_algo[^'\\"]*['\\"][^>]*>.*?</li>", response.text):
-                match = re.search(r"(?is)<h2[^>]*>\\s*<a[^>]+href=['\\"]([^'\\"]+)['\\"][^>]*>(.*?)</a>", block)
+            for block in re.findall(r'(?is)<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?</li>', response.text):
+                match = re.search(r'(?is)<h2[^>]*>\\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
                 if match:
                     snippet_match = re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
                     results.append({
