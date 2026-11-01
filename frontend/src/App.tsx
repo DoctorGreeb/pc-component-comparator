@@ -3,6 +3,13 @@ import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
 import { updateDatabaseWithProgress, exportCatalog, importCatalogWithProgress } from './api'
+import {
+  AppSettings,
+  loadSettings,
+  saveSettings,
+  applyTheme,
+  DEFAULT_SETTINGS,
+} from './settings'
 import './App.css'
 
 const STORAGE_KEY = 'reefapi_key'
@@ -26,6 +33,9 @@ function App() {
   const [apiKeyApplied, setApiKeyApplied] = useState(false)
   const [economy, setEconomy] = useState(false)
   const [creditsExhausted, setCreditsExhausted] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings())
+  const [draft, setDraft] = useState<AppSettings>(() => loadSettings())
   const fileRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
@@ -35,7 +45,18 @@ function App() {
       setApiKeyInput(saved)
       setApiKeyApplied(true)
     }
+    applyTheme(settings.theme)
   }, [])
+
+  useEffect(() => {
+    applyTheme(settings.theme)
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => {
+      if (settings.theme === 'system') applyTheme('system')
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [settings.theme])
 
   const toggleSelect = useCallback((item: SelectedItem) => {
     setSelected((prev) => {
@@ -63,6 +84,24 @@ function App() {
     setUpdateMsg('Ключ сохранён. Можно обновить базу.')
   }
 
+  const openSettings = () => {
+    setDraft({ ...settings })
+    setSettingsOpen(true)
+  }
+
+  const saveSettingsForm = () => {
+    const next: AppSettings = {
+      ...draft,
+      imageTimeoutSec: Math.max(1, Math.min(99, Number(draft.imageTimeoutSec) || 15)),
+      maxWebImages: Math.max(0, Math.min(500, Number(draft.maxWebImages) || 100)),
+      pageSize: Math.max(12, Math.min(120, Number(draft.pageSize) || 48)),
+    }
+    setSettings(next)
+    saveSettings(next)
+    setSettingsOpen(false)
+    setUpdateMsg('Настройки сохранены')
+  }
+
   const runUpdate = async (opts: { freeOnly?: boolean; forceEconomy?: boolean }) => {
     const key = apiKeyInput.trim() || localStorage.getItem(STORAGE_KEY) || undefined
     const freeOnly = !!opts.freeOnly || !key
@@ -76,6 +115,9 @@ function App() {
           apiKey: freeOnly ? undefined : key,
           economy: opts.forceEconomy ?? economy,
           freeOnly,
+          imageTimeoutSec: settings.imageTimeoutSec,
+          maxWebImages: settings.maxWebImages,
+          webImages: settings.webImages,
         },
         (ev) => {
           setProgressPct(Math.max(0, Math.min(100, ev.pct ?? 0)))
@@ -107,7 +149,7 @@ function App() {
       a.download = `pc-catalog-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      setUpdateMsg(`Экспорт: ${data.count} позиций. Файл можно импортировать без API.`)
+      setUpdateMsg(`Экспорт: ${data.count} позиций.`)
     } catch (e) {
       setUpdateMsg(e instanceof Error ? e.message : 'Ошибка экспорта')
     }
@@ -166,9 +208,7 @@ function App() {
                 <span className="help-tip" tabIndex={0}>
                   ?
                   <span className="help-tip-content">
-                    Ключ — для живых цен DNS/Маркет/WB. Без ключа работает кнопка
-                    «Без ключа»: открытые датасеты (характеристики + ориентир. цены).
-                    Также: экспорт/импорт JSON и экономный режим. БД хранится в data/pc_components.db.
+                    Ключ — живые цены. Без ключа — open-data. Таймаут картинок и тема — в Настройках.
                   </span>
                 </span>
               </label>
@@ -194,30 +234,27 @@ function App() {
             <div className="api-key-extra">
               <label className="economy-check">
                 <input type="checkbox" checked={economy} onChange={(e) => setEconomy(e.target.checked)} />
-                Экономный режим (мало кредитов)
+                Экономный режим
               </label>
               {apiKeyApplied && <span className="api-key-status">Ключ в браузере</span>}
             </div>
           </div>
 
           <div className="header-actions">
+            <button type="button" className="btn btn-outline btn-sm" onClick={openSettings} disabled={updating}>
+              Настройки
+            </button>
             <button className="btn btn-primary" onClick={() => handleUpdateDb()} disabled={updating}>
               {updating ? 'Обновление…' : 'Обновить базу'}
             </button>
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={handleFreeUpdate}
-              disabled={updating}
-              title="Открытые датасеты без API-ключа"
-            >
+            <button type="button" className="btn btn-outline" onClick={handleFreeUpdate} disabled={updating}>
               Без ключа
             </button>
             <button type="button" className="btn btn-outline btn-sm" onClick={handleExport} disabled={updating}>
-              Экспорт JSON
+              Экспорт
             </button>
             <button type="button" className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()} disabled={updating}>
-              Импорт JSON
+              Импорт
             </button>
             <input
               ref={fileRef}
@@ -250,8 +287,7 @@ function App() {
         {creditsExhausted && (
           <div className="credits-banner">
             <strong>Кредиты ReefAPI закончились.</strong>{' '}
-            Каталог сохранён. Можно «Без ключа», экспорт JSON или{' '}
-            <a href={REEF_PRICING_URL} target="_blank" rel="noopener noreferrer">пополнить</a>.
+            <a href={REEF_PRICING_URL} target="_blank" rel="noopener noreferrer">Пополнить</a> или «Без ключа».
           </div>
         )}
 
@@ -270,13 +306,127 @@ function App() {
           <div className="compare-bar-inner">
             <span>
               Выбрано: {selected.length} / 4
-              {selected.length > 0 && (
-                <span className="selected-names"> ({selected.map((s) => s.name).join(', ')})</span>
-              )}
+              <span className="selected-names"> ({selected.map((s) => s.name).join(', ')})</span>
             </span>
             <div className="compare-bar-actions">
               <button className="btn btn-ghost" onClick={clearSelection}>Очистить</button>
               <button className="btn btn-primary" onClick={goToCompare}>Перейти к сравнению</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {settingsOpen && (
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="modal-header">
+              <h2>Настройки</h2>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSettingsOpen(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <label className="field">
+                <span>Тема сайта</span>
+                <select
+                  value={draft.theme}
+                  onChange={(e) => setDraft({ ...draft, theme: e.target.value as AppSettings['theme'] })}
+                >
+                  <option value="light">Светлая</option>
+                  <option value="dark">Тёмная</option>
+                  <option value="system">Как в системе</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span>Таймаут поиска картинки (сек, 1–99)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={draft.imageTimeoutSec}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      imageTimeoutSec: Math.max(1, Math.min(99, Number(e.target.value) || 1)),
+                    })
+                  }
+                />
+                <small>Если поиск дольше — «Превышено время…» и переход к следующему товару</small>
+              </label>
+
+              <label className="field">
+                <span>Макс. товаров для web-поиска картинок</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={draft.maxWebImages}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      maxWebImages: Math.max(0, Math.min(500, Number(e.target.value) || 0)),
+                    })
+                  }
+                />
+              </label>
+
+              <label className="field check">
+                <input
+                  type="checkbox"
+                  checked={draft.webImages}
+                  onChange={(e) => setDraft({ ...draft, webImages: e.target.checked })}
+                />
+                <span>Искать картинки в интернете (Wikimedia / Openverse)</span>
+              </label>
+
+              <label className="field">
+                <span>Товаров на странице каталога</span>
+                <input
+                  type="number"
+                  min={12}
+                  max={120}
+                  value={draft.pageSize}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      pageSize: Math.max(12, Math.min(120, Number(e.target.value) || 48)),
+                    })
+                  }
+                />
+              </label>
+
+              <label className="field check">
+                <input
+                  type="checkbox"
+                  checked={draft.compactCards}
+                  onChange={(e) => setDraft({ ...draft, compactCards: e.target.checked })}
+                />
+                <span>Компактные карточки</span>
+              </label>
+
+              <label className="field check">
+                <input
+                  type="checkbox"
+                  checked={draft.showOrientirPrices}
+                  onChange={(e) => setDraft({ ...draft, showOrientirPrices: e.target.checked })}
+                />
+                <span>Показывать ориентировочные цены (open-data)</span>
+              </label>
+
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setDraft({ ...DEFAULT_SETTINGS })}
+              >
+                Сбросить по умолчанию
+              </button>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline" onClick={() => setSettingsOpen(false)}>
+                Отмена
+              </button>
+              <button type="button" className="btn btn-primary" onClick={saveSettingsForm}>
+                Сохранить
+              </button>
             </div>
           </div>
         </div>
