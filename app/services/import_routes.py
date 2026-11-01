@@ -36,156 +36,130 @@ def _sse(data: dict) -> str:
 
 
 def register(app):
+    try:
+        from app.services import product_routes
+        app.include_router(product_routes.router)
+    except Exception:
+        pass
+
     @app.post("/catalog/import-stream")
     async def import_catalog_stream(
         body: schemas.CatalogImportRequest = Body(...),
         db: Session = Depends(get_db),
     ):
         async def generate():
-            try:
-                yield _sse({"pct": 2, "op": "Подготовка категорий и магазинов…"})
-                for cat in DEFAULT_CATEGORIES:
-                    if not db.query(models.Category).filter(models.Category.name == cat["name"]).first():
-                        db.add(models.Category(**cat))
-                for store in DEFAULT_STORES:
-                    if not db.query(models.Store).filter(models.Store.name == store["name"]).first():
-                        db.add(models.Store(**store))
-                db.commit()
-                cats = {c.name: c for c in db.query(models.Category).all()}
-                stores = {s.name: s for s in db.query(models.Store).all()}
+            items = body.items or []
+            total = len(items)
+            if total == 0:
+                yield _sse({"pct": 100, "op": "Пустой импорт", "result": {"status": "ok", "message": "Нет позиций", "components_added": 0, "added": 0, "updated": 0}})
+                return
 
-                items = body.items or []
-                total = len(items)
-                if total == 0:
-                    yield _sse({
-                        "pct": 100,
-                        "op": "Пустой список items",
-                        "result": {"status": "error", "message": "Нет items", "added": 0, "updated": 0},
-                    })
-                    return
+            for cat in DEFAULT_CATEGORIES:
+                if not db.query(models.Category).filter(models.Category.name == cat["name"]).first():
+                    db.add(models.Category(**cat))
+            for store in DEFAULT_STORES:
+                if not db.query(models.Store).filter(models.Store.name == store["name"]).first():
+                    db.add(models.Store(**store))
+            db.commit()
 
-                added = updated = skipped = 0
-                yield _sse({"pct": 5, "op": f"Импорт JSON: {total} позиций…"})
+            cats = {c.name: c for c in db.query(models.Category).all()}
+            stores = {s.name: s for s in db.query(models.Store).all()}
+            added = updated = 0
 
-                for i, item in enumerate(items, 1):
-                    pct = 5 + int(90 * i / total)
-                    short = (item.name or "?")[:64]
-                    cat = cats.get(item.category)
-                    if not cat:
-                        skipped += 1
-                        yield _sse({
-                            "pct": pct,
-                            "op": f"[{i}/{total}] Пропуск (нет категории «{item.category}»): {short}",
-                        })
-                        continue
-                    store = stores.get(item.store) or stores.get("DNS")
-                    if not store:
-                        skipped += 1
-                        yield _sse({
-                            "pct": pct,
-                            "op": f"[{i}/{total}] Пропуск (нет магазина): {short}",
-                        })
+            for idx, item in enumerate(items, start=1):
+                try:
+                    cat_name = (getattr(item, "category", None) or "cpu").strip().lower()
+                    if cat_name not in cats:
+                        cat_name = "cpu"
+                    cat = cats[cat_name]
+                    name = (getattr(item, "name", None) or "").strip()
+                    if not name:
+                        yield _sse({"pct": int(idx / total * 100), "op": f"[{idx}/{total}] пропуск: пустое имя"})
                         continue
 
-                    external_id = item.external_id or f"import-{item.category}-{item.name}"[:120]
-                    existing_price = (
-                        db.query(models.Price)
-                        .filter(
-                            models.Price.store_id == store.id,
-                            models.Price.external_id == str(external_id),
-                        )
+                    brand = getattr(item, "brand", None)
+                    store_name = getattr(item, "store", None) or "DNS"
+                    store = stores.get(store_name) or list(stores.values())[0]
+
+                    existing = (
+                        db.query(models.Component)
+                        .filter(models.Component.category_id == cat.id, models.Component.name == name)
                         .first()
                     )
-                    specs_json = json.dumps(item.specs, ensure_ascii=False) if item.specs else None
-                    action = "обновляю" if existing_price else "добавляю"
-                    price_txt = f"{item.price} ₽" if item.price is not None else "без цены"
-                    if item.image_url:
+
+                    specs = getattr(item, "specs", None)
+                    specs_str = json.dumps(specs, ensure_ascii=False) if isinstance(specs, dict) else (specs if isinstance(specs, str) else None)
+                    image_url = getattr(item, "image_url", None)
+                    description = getattr(item, "description", None)
+                    price = getattr(item, "price", None)
+                    old_price = getattr(item, "old_price", None)
+                    product_url = getattr(item, "product_url", None)
+                    external_id = getattr(item, "external_id", None)
+
+                    img_note = ""
+                    if image_url:
                         try:
-                            img_note = f", фото ← {urlparse(item.image_url).netloc or 'url'}"
+                            host = urlparse(image_url).netloc or "файл"
+                            img_note = f", фото ← {host}"
                         except Exception:
                             img_note = ", с фото"
-                    else:
-                        img_note = ", без фото"
 
-                    yield _sse({
-                        "pct": pct,
-                        "op": f"[{i}/{total}] {action}: {short} ({item.category}, {price_txt}{img_note})",
-                    })
-
-                    if existing_price:
-                        comp = existing_price.component
-                        comp.name = item.name
-                        if item.brand:
-                            comp.brand = item.brand
-                        if item.image_url:
-                            comp.image_url = item.image_url
-                        if item.description:
-                            comp.description = item.description
-                        if specs_json:
-                            comp.specs = specs_json
-                        if item.price is not None:
-                            existing_price.price = float(item.price)
-                        existing_price.old_price = item.old_price
-                        existing_price.product_url = item.product_url or existing_price.product_url
+                    if existing:
+                        if description and not existing.description:
+                            existing.description = description
+                        if image_url and (not existing.image_url or str(existing.image_url).startswith("data:")):
+                            existing.image_url = image_url
+                        if specs_str and not existing.specs:
+                            existing.specs = specs_str
+                        if brand and not existing.brand:
+                            existing.brand = brand
+                        if price is not None:
+                            pr = next((p for p in existing.prices if p.store_id == store.id), None)
+                            if pr:
+                                pr.price = float(price)
+                                if old_price is not None:
+                                    pr.old_price = float(old_price)
+                                if product_url:
+                                    pr.product_url = product_url
+                            else:
+                                db.add(models.Price(component_id=existing.id, store_id=store.id, price=float(price),
+                                    old_price=float(old_price) if old_price is not None else None,
+                                    product_url=product_url, external_id=external_id, in_stock=True))
                         updated += 1
+                        op = f"[{idx}/{total}] обновляю: {name} ({cat_name}" + (f", {int(price)} ₽" if price else "") + img_note + ")"
                     else:
                         comp = models.Component(
-                            category_id=cat.id,
-                            name=item.name,
-                            brand=item.brand,
-                            description=item.description,
-                            image_url=item.image_url,
-                            specs=specs_json,
+                            category_id=cat.id, name=name, brand=brand,
+                            description=description, image_url=image_url, specs=specs_str,
                         )
                         db.add(comp)
                         db.flush()
-                        db.add(
-                            models.Price(
-                                component_id=comp.id,
-                                store_id=store.id,
-                                price=float(item.price) if item.price is not None else None,
-                                old_price=item.old_price,
-                                in_stock=True,
-                                product_url=item.product_url,
-                                external_id=str(external_id),
-                            )
-                        )
+                        if price is not None:
+                            db.add(models.Price(component_id=comp.id, store_id=store.id, price=float(price),
+                                old_price=float(old_price) if old_price is not None else None,
+                                product_url=product_url, external_id=external_id, in_stock=True))
                         added += 1
+                        op = f"[{idx}/{total}] добавляю: {name} ({cat_name}" + (f", {int(price)} ₽" if price else "") + img_note + ")"
 
-                    if i % 25 == 0:
+                    if idx % 20 == 0:
                         db.commit()
+                    yield _sse({"pct": int(idx / total * 100), "op": op})
+                except Exception as e:
+                    yield _sse({"pct": int(idx / total * 100), "op": f"[{idx}/{total}] ошибка: {e}"})
 
-                db.commit()
-                msg = (
-                    f"Импорт завершён: +{added}, обновлено {updated}"
-                    + (f", пропущено {skipped}" if skipped else "")
-                )
-                yield _sse({
-                    "pct": 100,
-                    "op": "Готово",
-                    "result": {
-                        "status": "ok",
-                        "message": msg,
-                        "added": added,
-                        "updated": updated,
-                        "components_added": added,
-                    },
-                })
-            except Exception as e:
-                db.rollback()
-                yield _sse({
-                    "pct": 100,
-                    "op": "Ошибка импорта",
-                    "error": str(e),
-                    "result": {"status": "error", "message": str(e), "added": 0, "updated": 0},
-                })
+            db.commit()
+            yield _sse({
+                "pct": 100,
+                "op": "Импорт завершён",
+                "result": {
+                    "status": "ok",
+                    "message": f"Импорт: +{added}, обновлено {updated}",
+                    "components_added": added,
+                    "added": added,
+                    "updated": updated,
+                },
+            })
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return StreamingResponse(generate(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+        })
