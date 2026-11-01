@@ -100,6 +100,10 @@ class FacetsResponse(BaseModel):
 
 class UpdateDatabaseRequest(BaseModel):
     api_key: Optional[str] = Field(None, description="ReefAPI key (ak_live_...)")
+    economy: bool = Field(
+        False,
+        description="Экономный режим: меньше запросов, если кредиты на исходе",
+    )
 
 
 class UpdateDatabaseResponse(BaseModel):
@@ -108,3 +112,23 @@ class UpdateDatabaseResponse(BaseModel):
     note: Optional[str] = None
     components_added: int = 0
     categories_ready: int = 0
+    economy: bool = False
+    credits_exhausted: bool = False
+
+
+class CatalogExportItem(BaseModel):
+    category: str
+    name: str
+    brand: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    specs: Optional[dict[str, Any]] = None
+    price: Optional[float] = None
+    old_price: Optional[float] = None
+    product_url: Optional[str] = None
+    external_id: Optional[str] = None
+    store: str = "DNS"
+
+
+class CatalogImportRequest(BaseModel):
+    items: list[CatalogExportItem]
