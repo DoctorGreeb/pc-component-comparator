@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, Any
 
 
@@ -69,6 +69,10 @@ class ComponentListItem(BaseModel):
     min_price: Optional[float] = None
     in_stock: bool = False
     model_config = ConfigDict(from_attributes=True)
+
+
+class UpdateDatabaseRequest(BaseModel):
+    api_key: Optional[str] = Field(None, description="ReefAPI key (ak_live_...)")
 
 
 class UpdateDatabaseResponse(BaseModel):
