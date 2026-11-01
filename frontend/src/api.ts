@@ -105,6 +105,23 @@ export interface ProductEnrichment {
   reviews_note: string;
 }
 
+export interface FindSpecsResult {
+  status: 'ok' | 'not_found' | 'already_filled';
+  message: string;
+  specs: Record<string, unknown>;
+  source?: string;
+  source_url?: string | null;
+}
+
+export async function findComponentSpecs(id: number): Promise<FindSpecsResult> {
+  const res = await fetch(`${API_BASE}/components/${id}/find-specs`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось найти характеристики');
+  }
+  return data as FindSpecsResult;
+}
+
 export async function fetchCategories(): Promise<Category[]> {
   const res = await fetch(`${API_BASE}/categories`);
   if (!res.ok) throw new Error('Не удалось загрузить категории');
@@ -191,11 +208,11 @@ async function readSseStream(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\n\n');
+    const chunks = buffer.split('\\n\\n');
     buffer = chunks.pop() || '';
     for (const chunk of chunks) {
       const line = chunk
-        .split('\n')
+        .split('\\n')
         .map((l) => l.trim())
         .find((l) => l.startsWith('data:'));
       if (!line) continue;
