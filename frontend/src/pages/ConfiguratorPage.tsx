@@ -268,6 +268,10 @@ export function ConfiguratorPage() {
 
   const openPicker = useCallback(
     async (slotKey: string) => {
+      if (activeSlot === slotKey) {
+        setActiveSlot(null)
+        return
+      }
       setActiveSlot(slotKey)
       setPickerQ('')
       setSpecFilters({})
@@ -275,7 +279,7 @@ export function ConfiguratorPage() {
       setCompatOnly(true)
       await loadSlot(slotKey)
     },
-    [loadSlot],
+    [loadSlot, activeSlot],
   )
 
   const compatibleItems = useMemo(() => {
@@ -357,8 +361,8 @@ export function ConfiguratorPage() {
 
   return (
     <div className="cfg">
-      <div className="cfg-header">
-        <div>
+      <header className="cfg-header">
+        <div className="cfg-header-text">
           <h1>Конфигуратор ПК</h1>
           <p className="cfg-sub">
             Совместимость фильтрует список: AM5 → только DDR5, AM4 → только DDR4.
@@ -371,17 +375,17 @@ export function ConfiguratorPage() {
             <strong>{formatPrice(total || null)}</strong>
           </div>
           <div className="cfg-filled">
-            {filled} / {SLOTS.length} позиций
+            {filled} / {SLOTS.length}
           </div>
           <button type="button" className="btn btn-outline btn-sm" onClick={clearAll}>
-            Очистить сборку
+            Очистить
           </button>
         </div>
-      </div>
+      </header>
 
       {warnings.length > 0 && (
-        <div className="cfg-warnings">
-          <strong>Проверьте совместимость:</strong>
+        <div className="cfg-warnings" role="alert">
+          <strong>Проверьте совместимость</strong>
           <ul>
             {warnings.map((w) => (
               <li key={w}>{w}</li>
@@ -393,125 +397,150 @@ export function ConfiguratorPage() {
       <div className="cfg-slots">
         {SLOTS.map((slot) => {
           const item = build[slot.key]
+          const isOpen = activeSlot === slot.key
           return (
-            <div key={slot.key} className={`cfg-slot ${item ? 'filled' : ''}`}>
-              <div className="cfg-slot-label">
-                {slot.label}
-                {slot.required && <span className="req">*</span>}
-              </div>
-              {item ? (
-                <div className="cfg-slot-item">
-                  {item.image_url && (
-                    <img src={item.image_url} alt="" className="cfg-thumb" loading="lazy" />
-                  )}
-                  <div className="cfg-slot-meta">
-                    <div className="cfg-name">{item.name}</div>
-                    <div className="cfg-row-specs">{rowSpecsLine(item, slot.key)}</div>
-                    <div className="cfg-price">{formatPrice(item.min_price)}</div>
+            <div
+              key={slot.key}
+              className={`cfg-slot ${item ? 'filled' : ''} ${isOpen ? 'open' : ''}`}
+            >
+              <div className="cfg-slot-top">
+                <div className="cfg-slot-label">
+                  {slot.label}
+                  {slot.required && <span className="req">*</span>}
+                </div>
+                {item ? (
+                  <div className="cfg-slot-item">
+                    {item.image_url && (
+                      <img src={item.image_url} alt="" className="cfg-thumb" loading="lazy" />
+                    )}
+                    <div className="cfg-slot-meta">
+                      <div className="cfg-name">{item.name}</div>
+                      <div className="cfg-row-specs">{rowSpecsLine(item, slot.key)}</div>
+                      <div className="cfg-price">{formatPrice(item.min_price)}</div>
+                    </div>
+                    <div className="cfg-slot-actions">
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => void openPicker(slot.key)}
+                      >
+                        {isOpen ? 'Свернуть' : 'Заменить'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => clearSlot(slot.key)}
+                        aria-label="Убрать"
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
-                  <div className="cfg-slot-actions">
-                    <button
-                      type="button"
-                      className="btn btn-outline btn-sm"
-                      onClick={() => void openPicker(slot.key)}
-                    >
-                      Заменить
-                    </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="cfg-add"
+                    onClick={() => void openPicker(slot.key)}
+                  >
+                    + Выбрать {slot.label.toLowerCase()}
+                  </button>
+                )}
+              </div>
+
+              {isOpen && (
+                <div className="cfg-picker-panel">
+                  <div className="cfg-picker-head">
+                    <h2>Выбор: {catRu(slot.key)}</h2>
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      onClick={() => clearSlot(slot.key)}
+                      onClick={() => setActiveSlot(null)}
                     >
-                      ✕
+                      Закрыть
                     </button>
                   </div>
+
+                  {ddrLockNote && (
+                    <div className="cfg-ddr-lock" role="status">
+                      {ddrLockNote}
+                    </div>
+                  )}
+                  {compatNote && <div className="cfg-compat-note">{compatNote}</div>}
+
+                  <div className="cfg-picker-bar">
+                    <input
+                      type="search"
+                      placeholder="Поиск по названию…"
+                      value={pickerQ}
+                      onChange={(e) => setPickerQ(e.target.value)}
+                      autoFocus
+                    />
+                    <select
+                      value={sort}
+                      onChange={(e) => setSort(e.target.value as SpecSort)}
+                    >
+                      {sortOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="cfg-compat-toggle">
+                      <input
+                        type="checkbox"
+                        checked={compatOnly}
+                        onChange={(e) => setCompatOnly(e.target.checked)}
+                      />
+                      Только совместимые
+                    </label>
+                  </div>
+
+                  {pickerLoading && (
+                    <div className="cfg-loading">Загрузка категории…</div>
+                  )}
+                  {loadError && <div className="cfg-error">{loadError}</div>}
+
+                  {!pickerLoading && filteredItems.length === 0 && (
+                    <div className="cfg-empty">
+                      {compatOnly
+                        ? 'Нет совместимых позиций. Снимите «Только совместимые» или смените уже выбранные слоты.'
+                        : 'Ничего не найдено.'}
+                    </div>
+                  )}
+
+                  {!pickerLoading && filteredItems.length > 0 && (
+                    <div className="cfg-list">
+                      {filteredItems.map((it) => (
+                        <button
+                          key={it.id}
+                          type="button"
+                          className="cfg-row"
+                          onClick={() => selectPart(it)}
+                        >
+                          {it.image_url ? (
+                            <img src={it.image_url} alt="" loading="lazy" />
+                          ) : (
+                            <div className="cfg-row-ph" />
+                          )}
+                          <div className="cfg-row-main">
+                            <div className="cfg-row-name">{it.name}</div>
+                            <div className="cfg-row-specs">
+                              {rowSpecsLine(it, slot.key)}
+                            </div>
+                          </div>
+                          <div className="cfg-row-price">
+                            {formatPrice(it.min_price)}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <button
-                  type="button"
-                  className="cfg-add"
-                  onClick={() => void openPicker(slot.key)}
-                >
-                  + Выбрать {slot.label.toLowerCase()}
-                </button>
               )}
             </div>
           )
         })}
       </div>
-
-      {activeSlot && (
-        <div className="cfg-picker-panel">
-          <div className="cfg-picker-head">
-            <h2>Выбор: {catRu(activeSlot)}</h2>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setActiveSlot(null)}>
-              Закрыть
-            </button>
-          </div>
-
-          {ddrLockNote && (
-            <div className="cfg-ddr-lock" role="status">{ddrLockNote}</div>
-          )}
-          {compatNote && <div className="cfg-compat-note">{compatNote}</div>}
-
-          <div className="cfg-picker-bar">
-            <input
-              type="search"
-              placeholder="Поиск по названию…"
-              value={pickerQ}
-              onChange={(e) => setPickerQ(e.target.value)}
-            />
-            <select value={sort} onChange={(e) => setSort(e.target.value as SpecSort)}>
-              {sortOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            <label className="cfg-compat-toggle">
-              <input
-                type="checkbox"
-                checked={compatOnly}
-                onChange={(e) => setCompatOnly(e.target.checked)}
-              />
-              Только совместимые
-            </label>
-          </div>
-
-          {pickerLoading && <div className="cfg-loading">Загрузка категории…</div>}
-          {loadError && <div className="cfg-error">{loadError}</div>}
-
-          {!pickerLoading && filteredItems.length === 0 && (
-            <div className="cfg-empty">
-              {compatOnly
-                ? 'Нет совместимых позиций. Снимите «Только совместимые» или смените уже выбранные слоты.'
-                : 'Ничего не найдено.'}
-            </div>
-          )}
-
-          <div className="cfg-list">
-            {filteredItems.map((it) => (
-              <button
-                key={it.id}
-                type="button"
-                className="cfg-row"
-                onClick={() => selectPart(it)}
-              >
-                {it.image_url ? (
-                  <img src={it.image_url} alt="" loading="lazy" />
-                ) : (
-                  <div className="cfg-row-ph" />
-                )}
-                <div className="cfg-row-main">
-                  <div className="cfg-row-name">{it.name}</div>
-                  <div className="cfg-row-specs">{rowSpecsLine(it, activeSlot)}</div>
-                </div>
-                <div className="cfg-row-price">{formatPrice(it.min_price)}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
