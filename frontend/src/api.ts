@@ -73,13 +73,21 @@ export async function fetchCompare(ids: number[]): Promise<{
   return res.json();
 }
 
-export async function updateDatabase(): Promise<{
+export async function updateDatabase(apiKey?: string): Promise<{
   status: string;
   message: string;
   note?: string;
+  components_added: number;
   categories_ready: number;
 }> {
-  const res = await fetch(`${API_BASE}/update-database`, { method: 'POST' });
-  if (!res.ok) throw new Error('Update failed');
+  const res = await fetch(`${API_BASE}/update-database`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(apiKey ? { api_key: apiKey } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Update failed');
+  }
   return res.json();
 }
