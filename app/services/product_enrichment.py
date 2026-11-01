@@ -349,7 +349,7 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
 
                 if href.startswith("//"):
                     href = "https:" + href
-                if href.startswith("http") and href not in seen_urls and _spec_name_match(query_base, title):
+                if href.startswith("http") and href not in seen_urls and (_spec_name_match(name, title) or (model and _spec_name_match(model, title))):
                     seen_urls.add(href)
                     candidates.append((title, href))
 
@@ -359,7 +359,7 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
                 if not anchor:
                     continue
                 href, title = anchor.group(1), _plain_html(anchor.group(2))
-                if href.startswith("http") and href not in seen_urls and _spec_name_match(query_base, title):
+                if href.startswith("http") and href not in seen_urls and (_spec_name_match(name, title) or (model and _spec_name_match(model, title))):
                     seen_urls.add(href)
                     candidates.append((title, href))
 
