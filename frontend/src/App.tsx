@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
+import { ConfiguratorPage } from './pages/ConfiguratorPage'
 import { updateDatabaseWithProgress, exportCatalog, importCatalogWithProgress } from './api'
 import {
   AppSettings,
@@ -197,7 +198,10 @@ function App() {
       <header className="header">
         <div className="header-inner">
           <Link to="/" className="logo">PC Comparator</Link>
-          <nav className="nav"><Link to="/">Каталог</Link></nav>
+          <nav className="nav">
+            <Link to="/">Каталог</Link>
+            <Link to="/configurator">Конфигуратор</Link>
+          </nav>
 
           <div className="api-key-block">
             <div className="api-key-row">
@@ -206,7 +210,7 @@ function App() {
                 <span className="help-tip" tabIndex={0}>
                   ?
                   <span className="help-tip-content">
-                    Ключ — живые цены. Без ключа — open-data. Картинки: Google CSE или DuckDuckGo.
+                    Ключ — живые цены. Без ключа — open-data. Картинки: Google/DDG/Bing/Wiki.
                   </span>
                 </span>
               </label>
@@ -261,6 +265,7 @@ function App() {
         <Routes>
           <Route path="/" element={<CatalogPage selected={selected} onToggle={toggleSelect} />} />
           <Route path="/compare" element={<ComparePage />} />
+          <Route path="/configurator" element={<ConfiguratorPage />} />
         </Routes>
       </main>
 
@@ -307,7 +312,7 @@ function App() {
 
               <label className="field check">
                 <input type="checkbox" checked={draft.webImages} onChange={(e) => setDraft({ ...draft, webImages: e.target.checked })} />
-                <span>Искать картинки (Google CSE / DuckDuckGo / Wikimedia)</span>
+                <span>Искать картинки (Google / DDG / Bing / Wiki / Openverse)</span>
               </label>
 
               <label className="field">
@@ -315,10 +320,7 @@ function App() {
                 <input type="password" value={draft.googleCseKey}
                   onChange={(e) => setDraft({ ...draft, googleCseKey: e.target.value })}
                   placeholder="AIza..." autoComplete="off" />
-                <small>
-                  Официальные Google Images через Custom Search. Без ключа — первая превьюшка DuckDuckGo.
-                  Ключ: Google Cloud → Custom Search API. CX: programmablesearch.google.com (тип «изображения»).
-                </small>
+                <small>Без ключа — DDG/Bing/Wiki. С ключом — Google Images первым.</small>
               </label>
 
               <label className="field">
