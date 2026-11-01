@@ -260,3 +260,106 @@ async def enrich_product_page(
             else "По открытым источникам сниппетов не найдено."
         ),
     }
+
+
+def _plain_html(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    from html import unescape
+    return re.sub(r"\\s+", " ", unescape(value)).strip()
+
+
+def _spec_name_match(expected: str, candidate: str) -> bool:
+    def tokens(value: str) -> set[str]:
+        return set(re.findall(r"[a-zа-яё0-9]+", (value or "").lower()))
+    left, right = tokens(expected), tokens(candidate)
+    if not left or not right:
+        return False
+    if left <= right or right <= left:
+        return True
+    # Ignore generic words, but require several model-specific tokens.
+    generic = {"видеокарта", "процессор", "материнская", "плата", "память", "оперативная", "карта", "купить", "цена"}
+    left -= generic
+    right -= generic
+    if len(left) < 2:
+        return False
+    return len(left & right) / len(left) >= 0.7
+
+
+def _extract_spec_rows(page: str) -> dict[str, str]:
+    specs: dict[str, str] = {}
+    for row in re.findall(r"(?is)<tr\\b[^>]*>(.*?)</tr>", page):
+        cells = re.findall(r"(?is)<t[dh]\\b[^>]*>(.*?)</t[dh]>", row)
+        if len(cells) < 2:
+            continue
+        key = _plain_html(cells[0])[:90].strip(" :")
+        value = _plain_html(cells[1])[:300]
+        if not key or not value or key.lower() == value.lower():
+            continue
+        if len(key) < 2 or len(value) < 1:
+            continue
+        if key.lower() in {"характеристика", "параметр", "свойство", "specification", "feature"}:
+            continue
+        specs[key] = value
+
+    # Some manufacturer/store pages use definition lists instead of tables.
+    for block in re.findall(r"(?is)<dt\\b[^>]*>(.*?)</dt>\\s*<dd\\b[^>]*>(.*?)</dd>", page):
+        key, value = _plain_html(block[0])[:90], _plain_html(block[1])[:300]
+        if key and value and key.lower() != value.lower():
+            specs.setdefault(key, value)
+    return {k: v for k, v in specs.items() if k and v}
+
+
+async def search_specs_on_web(name: str, brand: str | None = None, model: str | None = None) -> dict[str, Any] | None:
+    """Fallback: search public web results and extract actual key/value rows from product pages."""
+    query = _clean_query(" ".join(x for x in (brand, model, name, "характеристики") if x))
+    if len(query) < 3:
+        return None
+    headers = {
+        "User-Agent": UA,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=6.0), headers=headers, follow_redirects=True) as client:
+        try:
+            response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        result_blocks = re.findall(r'(?is)<div[^>]+class="[^"]*result[^"]*"[^>]*>(.*?)(?=<div[^>]+class="[^"]*result[^"]*"|$)', response.text)
+        candidates: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+        for block in result_blocks:
+            link = re.search(r'(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
+            if not link:
+                continue
+            href = link.group(1)
+            title = _plain_html(link.group(2))
+            redirect = re.search(r"[?&]uddg=([^&]+)", href)
+            if redirect:
+                from urllib.parse import unquote
+                href = unquote(redirect.group(1))
+            if not href.startswith("http") or href in seen_urls:
+                continue
+            seen_urls.add(href)
+            if _spec_name_match(name, title):
+                candidates.append((title, href))
+            if len(candidates) >= 7:
+                break
+
+        for title, url in candidates:
+            try:
+                page_response = await client.get(url)
+                if page_response.status_code != 200 or "text/html" not in page_response.headers.get("content-type", ""):
+                    continue
+                specs = _extract_spec_rows(page_response.text)
+                if len(specs) >= 3:
+                    return {
+                        "specs": specs,
+                        "source": "web",
+                        "source_title": title,
+                        "source_url": str(page_response.url),
+                    }
+            except Exception:
+                continue
+    return None
