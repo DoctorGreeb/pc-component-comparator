@@ -6,7 +6,7 @@ import {
 } from '../api'
 import './ProductPage.css'
 
-function parseSpecs(raw: ComponentDetail['specs']): Record<string, string> {
+function parseSpecs(raw: ComponentDetail['specs'] | undefined): Record<string, string> {
   if (!raw) return {}
   if (typeof raw === 'string') {
     try {
