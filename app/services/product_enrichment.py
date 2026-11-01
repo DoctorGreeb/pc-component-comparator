@@ -38,7 +38,7 @@ def _clean_query(value: str) -> str:
 
 def _plain_html(value: str) -> str:
     value = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", value or "")
-    value = re.sub(r"(?s)<[^>]+", " ", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
     return re.sub(r"\s+", " ", unescape(value)).strip()
 
 
@@ -157,7 +157,7 @@ def _matches_product(title: str, name: str, brand: str | None, model: str | None
 
 
 def _spec_pairs_from_text(text: str) -> dict[str, str]:
-    text = unescape(re.sub(r"<[^>]+", " ", text or ""))
+    text = unescape(re.sub(r"<[^>]+>", " ", text or ""))
     text = re.sub(r"\s+", " ", text).strip()
     specs: dict[str, str] = {}
     labels = [
