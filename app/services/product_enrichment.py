@@ -260,3 +260,125 @@ async def enrich_product_page(
             else "По открытым источникам сниппетов не найдено."
         ),
     }
+
+
+def _plain_html(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", value)
+    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    from html import unescape
+    return re.sub(r"\\s+", " ", unescape(value)).strip()
+
+
+def _spec_name_match(expected: str, candidate: str) -> bool:
+    def tokens(value: str) -> set[str]:
+        return set(re.findall(r"[a-zа-яё0-9]+", (value or "").lower()))
+    left, right = tokens(expected), tokens(candidate)
+    if not left or not right:
+        return False
+    if left <= right or right <= left:
+        return True
+    # Ignore generic words, but require several model-specific tokens.
+    generic = {"видеокарта", "процессор", "материнская", "плата", "память", "оперативная", "карта", "купить", "цена"}
+    left -= generic
+    right -= generic
+    if len(left) < 2:
+        return False
+    return len(left & right) / len(left) >= 0.7
+
+
+def _extract_spec_rows(page: str) -> dict[str, str]:
+    specs: dict[str, str] = {}
+    for row in re.findall(r"(?is)<tr\\b[^>]*>(.*?)</tr>", page):
+        cells = re.findall(r"(?is)<t[dh]\\b[^>]*>(.*?)</t[dh]>", row)
+        if len(cells) < 2:
+            continue
+        key = _plain_html(cells[0])[:90].strip(" :")
+        value = _plain_html(cells[1])[:300]
+        if not key or not value or key.lower() == value.lower():
+            continue
+        if len(key) < 2 or len(value) < 1:
+            continue
+        if key.lower() in {"характеристика", "параметр", "свойство", "specification", "feature"}:
+            continue
+        specs[key] = value
+
+    # Some manufacturer/store pages use definition lists instead of tables.
+    for block in re.findall(r"(?is)<dt\\b[^>]*>(.*?)</dt>\\s*<dd\\b[^>]*>(.*?)</dd>", page):
+        key, value = _plain_html(block[0])[:90], _plain_html(block[1])[:300]
+        if key and value and key.lower() != value.lower():
+            specs.setdefault(key, value)
+    return {k: v for k, v in specs.items() if k and v}
+
+
+async def search_specs_on_web(name: str, brand: str | None = None, model: str | None = None) -> dict[str, Any] | None:
+    """Search several public web result pages and extract real product spec tables."""
+    query_base = _clean_query(" ".join(x for x in (brand, model, name) if x))
+    if len(query_base) < 3:
+        return None
+    headers = {
+        "User-Agent": UA,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    }
+    candidates: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=6.0), headers=headers, follow_redirects=True) as client:
+        searches = [
+            ("https://html.duckduckgo.com/html/", {"q": query_base + " характеристики"}),
+            ("https://www.bing.com/search", {"q": query_base + " specifications"}),
+        ]
+        for search_url, params in searches:
+            try:
+                response = await client.get(search_url, params=params)
+                response.raise_for_status()
+                page = response.text
+            except Exception:
+                continue
+
+            # DuckDuckGo result links.
+            for anchor in re.findall(r'(?is)<a\\b[^>]*class="[^"]*result__a[^"]*"[^>]*>.*?</a>', page):
+                href_match = re.search(r'(?is)href="([^"]+)"', anchor)
+                title = _plain_html(anchor)
+                if not href_match:
+                    continue
+                href = href_match.group(1)
+                redirect = re.search(r"[?&]uddg=([^&]+)", href)
+                if redirect:
+                    from urllib.parse import unquote
+                    href = unquote(redirect.group(1))
+
+                if href.startswith("//"):
+                    href = "https:" + href
+                if href.startswith("http") and href not in seen_urls and _spec_name_match(query_base, title):
+                    seen_urls.add(href)
+                    candidates.append((title, href))
+
+            # Bing organic results.
+            for block in re.findall(r'(?is)<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?</li>', page):
+                anchor = re.search(r'(?is)<h2[^>]*>\\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
+                if not anchor:
+                    continue
+                href, title = anchor.group(1), _plain_html(anchor.group(2))
+                if href.startswith("http") and href not in seen_urls and _spec_name_match(query_base, title):
+                    seen_urls.add(href)
+                    candidates.append((title, href))
+
+            if len(candidates) >= 7:
+                break
+
+        for title, url in candidates[:10]:
+            try:
+                page_response = await client.get(url)
+                if page_response.status_code != 200 or "text/html" not in page_response.headers.get("content-type", ""):
+                    continue
+                specs = _extract_spec_rows(page_response.text)
+                if len(specs) >= 3:
+                    return {
+                        "specs": specs,
+                        "source": "web",
+                        "source_title": title,
+                        "source_url": str(page_response.url),
+                    }
+            except Exception:
+                continue
+    return None

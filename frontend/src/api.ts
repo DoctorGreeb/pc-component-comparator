@@ -110,11 +110,16 @@ export interface FindSpecsResult {
   message: string;
   specs: Record<string, unknown>;
   source?: string;
+  source_title?: string | null;
   source_url?: string | null;
 }
 
-export async function findComponentSpecs(id: number): Promise<FindSpecsResult> {
-  const res = await fetch(`${API_BASE}/components/${id}/find-specs`, { method: 'POST' });
+export async function findComponentSpecs(id: number, apiKey?: string): Promise<FindSpecsResult> {
+  const res = await fetch(`${API_BASE}/components/${id}/find-specs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey || undefined }),
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось найти характеристики');
