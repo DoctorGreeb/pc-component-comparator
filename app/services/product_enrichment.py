@@ -99,7 +99,7 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
         response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
         if response.status_code == 200:
             html = response.text
-            for match in re.finditer(r'(?is)<a\\b(?=[^>]*class="[^"]*result__a)([^>]*)>(.*?)</a>', html):
+            for match in re.finditer(r'(?is)<a\b(?=[^>]*class="[^"]*result__a)([^>]*)>(.*?)</a>', html):
                 href_match = re.search(r'href="([^"]+)"', match.group(1))
                 if not href_match:
                     continue
@@ -125,7 +125,7 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
         response = await client.get("https://www.bing.com/search", params={"q": query})
         if response.status_code == 200:
             for block in re.findall(r'(?is)<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?</li>', response.text):
-                match = re.search(r'(?is)<h2[^>]*>\\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
+                match = re.search(r'(?is)<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
                 if match:
                     snippet_match = re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
                     results.append({
