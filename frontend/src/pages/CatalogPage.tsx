@@ -56,10 +56,15 @@ export function CatalogPage({ selected, onToggle }: Props) {
     setPriceMin('')
     setPriceMax('')
     setPage(0)
+    const isMobile = window.matchMedia('(max-width: 900px)').matches
+    if (isMobile && !mobileFiltersOpen) {
+      setFacets(null)
+      return
+    }
     fetchFacets(activeCategory || undefined)
       .then(setFacets)
       .catch(() => setFacets(null))
-  }, [activeCategory])
+  }, [activeCategory, mobileFiltersOpen])
 
   const specQuery = useMemo(() => {
     const list: string[] = []
@@ -170,12 +175,11 @@ export function CatalogPage({ selected, onToggle }: Props) {
           ))}
         </ul>
 
+        <button type="button" className="mobile-filter-toggle" aria-expanded={mobileFiltersOpen} onClick={() => setMobileFiltersOpen((open) => !open)}>
+          {mobileFiltersOpen ? "Скрыть фильтры" : "Фильтры и характеристики"}
+          <span>{hasFilters ? " · активны" : ""}</span>
+        </button>
         {facets && (
-          <>
-          <button type="button" className="mobile-filter-toggle" aria-expanded={mobileFiltersOpen} onClick={() => setMobileFiltersOpen((open) => !open)}>
-            {mobileFiltersOpen ? "Скрыть фильтры" : "Фильтры и характеристики"}
-            <span>{hasFilters ? " · активны" : ""}</span>
-          </button>
           <div className={`filters ${mobileFiltersOpen ? "mobile-open" : ""}`}>
             <div className="filters-head">
               <h2 className="sidebar-title">Фильтры</h2>
@@ -251,7 +255,6 @@ export function CatalogPage({ selected, onToggle }: Props) {
               </div>
             ))}
           </div>
-          </>
         )}
       </aside>
 
