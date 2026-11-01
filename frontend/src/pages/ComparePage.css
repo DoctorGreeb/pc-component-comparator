@@ -10,9 +10,9 @@
 
 .back-link {
   display: inline-block;
-  margin-top: 12px;
   color: #2563eb;
   font-weight: 500;
+  font-size: 0.9rem;
 }
 
 .back-link:hover {
@@ -20,12 +20,41 @@
 }
 
 .compare-header {
-  margin-bottom: 24px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 
 .compare-header h1 {
-  font-size: 1.5rem;
-  margin-top: 8px;
+  font-size: 1.45rem;
+  margin-top: 6px;
+}
+
+.compare-sub {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.only-diff {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.only-diff input {
+  accent-color: #2563eb;
 }
 
 .table-wrap {
@@ -38,7 +67,7 @@
 .compare-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 600px;
+  min-width: 640px;
 }
 
 .compare-table th,
@@ -47,23 +76,27 @@
   text-align: left;
   border-bottom: 1px solid #f1f5f9;
   vertical-align: top;
+  font-size: 0.9rem;
 }
 
 .compare-table th {
   background: #f8fafc;
   font-weight: 600;
-  font-size: 0.9rem;
 }
 
 .compare-table .label-col {
-  width: 180px;
+  width: 170px;
   min-width: 140px;
   background: #f8fafc;
   font-weight: 500;
   color: #475569;
+}
+
+.sticky-col {
   position: sticky;
   left: 0;
-  z-index: 1;
+  z-index: 2;
+  box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.08);
 }
 
 .comp-head {
@@ -71,32 +104,82 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
-  min-width: 160px;
+  min-width: 170px;
 }
 
 .comp-thumb {
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
   object-fit: contain;
   background: #f1f5f9;
   border-radius: 8px;
 }
 
 .comp-name {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   line-height: 1.3;
+  font-weight: 600;
 }
 
 .comp-brand {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #64748b;
   text-transform: uppercase;
+}
+
+.comp-link {
+  font-size: 0.78rem;
+  color: #2563eb;
+  font-weight: 500;
+}
+
+.comp-link:hover {
+  text-decoration: underline;
+}
+
+.row-diff td {
+  background: #fffbeb;
+}
+
+.row-diff .label-col {
+  background: #fef3c7;
+}
+
+.price-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cmp-price {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.cmp-old {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+
+.desc-cell {
+  font-size: 0.82rem;
+  color: #475569;
+  line-height: 1.4;
 }
 
 .compare-table tbody tr:hover td {
   background: #f8fafc;
 }
 
+.compare-table tbody tr.row-diff:hover td {
+  background: #fef9c3;
+}
+
 .compare-table tbody tr:hover .label-col {
   background: #f1f5f9;
+}
+
+.compare-table tbody tr.row-diff:hover .label-col {
+  background: #fde68a;
 }
