@@ -2,22 +2,18 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface AppSettings {
   theme: ThemeMode
-  /** Таймаут поиска одной картинки, 1–99 сек */
   imageTimeoutSec: number
-  /** Макс. товаров для web-поиска картинок за один апдейт */
   maxWebImages: number
-  /** Искать картинки в интернете, если нет донора */
   webImages: boolean
-  /** Товаров на странице каталога */
   pageSize: number
-  /** Компактные карточки */
   compactCards: boolean
-  /** Показывать ориентировочные цены (open-data) */
   showOrientirPrices: boolean
-  /** Автоматически обновлять каталог при открытии (не рекомендуется) */
   autoRefreshOnOpen: boolean
-  /** Пауза после сообщения о таймауте картинки (сек, только UI-подсказка) */
   timeoutMessageHoldSec: number
+  /** Google Custom Search API key (Programmable Search) */
+  googleCseKey: string
+  /** Search engine ID (cx) */
+  googleCseCx: string
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -30,6 +26,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showOrientirPrices: true,
   autoRefreshOnOpen: false,
   timeoutMessageHoldSec: 2,
+  googleCseKey: '',
+  googleCseCx: '',
 }
 
 const KEY = 'pc_comparator_settings'
@@ -46,6 +44,8 @@ export function loadSettings(): AppSettings {
       maxWebImages: clamp(Number(parsed.maxWebImages ?? 100), 0, 500),
       pageSize: clamp(Number(parsed.pageSize ?? 48), 12, 120),
       timeoutMessageHoldSec: clamp(Number(parsed.timeoutMessageHoldSec ?? 2), 0, 5),
+      googleCseKey: String(parsed.googleCseKey ?? ''),
+      googleCseCx: String(parsed.googleCseCx ?? ''),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -78,5 +78,7 @@ export function settingsToApiPayload(s: AppSettings) {
     image_timeout_sec: s.imageTimeoutSec,
     max_web_images: s.maxWebImages,
     web_images: s.webImages,
+    google_api_key: s.googleCseKey || undefined,
+    google_cx: s.googleCseCx || undefined,
   }
 }
