@@ -14,24 +14,25 @@
 }
 
 .header-inner {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 12px 20px;
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .logo {
   font-weight: 700;
   font-size: 1.25rem;
   color: #2563eb;
+  white-space: nowrap;
 }
 
 .nav {
   display: flex;
   gap: 16px;
-  flex: 1;
 }
 
 .nav a {
@@ -43,8 +44,105 @@
   color: #2563eb;
 }
 
+.api-key-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 280px;
+}
+
+.api-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.api-key-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #4b5563;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.api-key-input {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.api-key-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.api-key-status {
+  font-size: 0.75rem;
+  color: #059669;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.link-external {
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.help-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  color: #4b5563;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: help;
+}
+
+.help-tip-content {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 280px;
+  padding: 10px 12px;
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  border-radius: 8px;
+  z-index: 50;
+  transition: opacity 0.15s, visibility 0.15s;
+  pointer-events: none;
+}
+
+.help-tip:hover .help-tip-content,
+.help-tip:focus .help-tip-content {
+  visibility: visible;
+  opacity: 1;
+}
+
 .update-msg {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 8px 20px 12px;
   font-size: 0.875rem;
@@ -66,6 +164,7 @@
   font-weight: 500;
   font-size: 0.9rem;
   transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 
 .btn-primary {
@@ -73,8 +172,13 @@
   color: #fff;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: #1d4ed8;
+}
+
+.btn-primary:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .btn-outline {
@@ -85,11 +189,6 @@
 
 .btn-outline:hover:not(:disabled) {
   background: #f3f4f6;
-}
-
-.btn-outline:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .btn-ghost {
