@@ -177,10 +177,30 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
 
             try:
                 if "dns" in sources:
-                    yield _sse({"pct": 15, "op": "Загрузка DNS…", "log": "POST https://api.reefapi.com/dns-shop/v1/search · загрузчик DNS"})
-                    stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
+                    import asyncio
+                    dns_queue: asyncio.Queue = asyncio.Queue()
+                    async def dns_progress(message: str):
+                        await dns_queue.put(message)
+                    async def run_dns():
+                        return await load_dns_catalog(
+                            db, max_per_query=24, pages_per_query=2,
+                            api_key=api_key, economy=economy, on_progress=dns_progress,
+                        )
+                    yield _sse({"pct": 15, "op": "Загрузка DNS…", "log": "POST https://api.reefapi.com/dns-shop/v1/search · подготовка пакетов запросов"})
+                    dns_task = asyncio.create_task(run_dns())
+                    dns_events = 0
+                    while not dns_task.done() or not dns_queue.empty():
+                        try:
+                            message = await asyncio.wait_for(dns_queue.get(), timeout=5.0)
+                            dns_events += 1
+                            yield _sse({"pct": min(48, 15 + dns_events * 1.2), "op": message, "log": message})
+                        except asyncio.TimeoutError:
+                            if not dns_task.done():
+                                yield _sse({"pct": min(48, 15 + dns_events * 1.2), "op": "DNS: ожидание ответа API…", "log": "DNS-запросы выполняются; ожидается ответ ReefAPI."})
+                    stats = await dns_task
                     total_added += int(stats.get("components_added") or 0)
                     notes.append(f"DNS: +{stats.get('components_added', 0)}")
+                    yield _sse({"pct": 49, "op": "DNS: этап завершён", "log": "DNS итоги: " + json.dumps(stats, ensure_ascii=False)})
                     if stats.get("stopped_reason"):
                         exhausted = True
                 extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
