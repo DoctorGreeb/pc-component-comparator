@@ -103,7 +103,15 @@ class UpdateDatabaseRequest(BaseModel):
     economy: bool = Field(False, description="Экономный режим")
     sources: Optional[list[str]] = Field(
         None,
-        description="Источники: dns, yandex_market, wildberries. По умолчанию все.",
+        description="dns, yandex_market, wildberries, free",
+    )
+    yml_url: Optional[str] = Field(
+        None,
+        description="Публичный YML-фид магазина (без API-ключа)",
+    )
+    free_only: bool = Field(
+        False,
+        description="Только бесплатные источники без ReefAPI",
     )
 
 
