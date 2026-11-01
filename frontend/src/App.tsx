@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
-import { updateDatabaseWithProgress, exportCatalog, importCatalog } from './api'
+import { updateDatabaseWithProgress, exportCatalog, importCatalogWithProgress } from './api'
 import './App.css'
 
 const STORAGE_KEY = 'reefapi_key'
@@ -123,14 +123,19 @@ function App() {
         return
       }
       setUpdating(true)
-      setProgressPct(30)
-      setProgressOp('Импорт JSON…')
-      const res = await importCatalog(items)
+      setUpdateMsg(null)
+      setProgressPct(1)
+      setProgressOp(`Чтение JSON: ${items.length} позиций…`)
+      const res = await importCatalogWithProgress(items, (ev) => {
+        setProgressPct(Math.max(0, Math.min(100, ev.pct ?? 0)))
+        if (ev.op) setProgressOp(ev.op)
+      })
       setProgressPct(100)
       setProgressOp('Готово')
-      setUpdateMsg((res as { message?: string }).message || `Импорт: +${(res as { added?: number }).added ?? 0}`)
+      setUpdateMsg(res.message || `Импорт: +${res.added ?? res.components_added ?? 0}`)
       setCreditsExhausted(false)
     } catch (e) {
+      setProgressOp('Ошибка')
       setUpdateMsg(e instanceof Error ? e.message : 'Ошибка импорта')
     } finally {
       setUpdating(false)
@@ -163,7 +168,7 @@ function App() {
                   <span className="help-tip-content">
                     Ключ — для живых цен DNS/Маркет/WB. Без ключа работает кнопка
                     «Без ключа»: открытые датасеты (характеристики + ориентир. цены).
-                    Также: экспорт/импорт JSON и экономный режим.
+                    Также: экспорт/импорт JSON и экономный режим. БД хранится в data/pc_components.db.
                   </span>
                 </span>
               </label>
@@ -232,10 +237,7 @@ function App() {
           <div className="progress-panel" role="status" aria-live="polite">
             <div className="progress-panel-inner">
               <div className="progress-track">
-                <div
-                  className="progress-fill"
-                  style={{ width: `${progressPct}%` }}
-                />
+                <div className="progress-fill" style={{ width: `${progressPct}%` }} />
               </div>
               <div className="progress-meta">
                 <span className="progress-op">{progressOp || 'Обновление…'}</span>
