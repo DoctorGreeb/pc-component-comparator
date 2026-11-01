@@ -41,7 +41,8 @@ export function CatalogPage({ selected, onToggle }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(0)
-  const limit = 48
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
+  const limit = 24
 
   useEffect(() => {
     fetchCategories()
@@ -170,7 +171,12 @@ export function CatalogPage({ selected, onToggle }: Props) {
         </ul>
 
         {facets && (
-          <div className="filters">
+          <>
+          <button type="button" className="mobile-filter-toggle" aria-expanded={mobileFiltersOpen} onClick={() => setMobileFiltersOpen((open) => !open)}>
+            {mobileFiltersOpen ? "Скрыть фильтры" : "Фильтры и характеристики"}
+            <span>{hasFilters ? " · активны" : ""}</span>
+          </button>
+          <div className={`filters ${mobileFiltersOpen ? "mobile-open" : ""}`}>
             <div className="filters-head">
               <h2 className="sidebar-title">Фильтры</h2>
               {hasFilters && (
@@ -245,6 +251,7 @@ export function CatalogPage({ selected, onToggle }: Props) {
               </div>
             ))}
           </div>
+          </>
         )}
       </aside>
 
