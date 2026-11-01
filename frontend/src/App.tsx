@@ -118,6 +118,8 @@ function App() {
           imageTimeoutSec: settings.imageTimeoutSec,
           maxWebImages: settings.maxWebImages,
           webImages: settings.webImages,
+          googleApiKey: settings.googleCseKey || undefined,
+          googleCx: settings.googleCseCx || undefined,
         },
         (ev) => {
           setProgressPct(Math.max(0, Math.min(100, ev.pct ?? 0)))
@@ -194,12 +196,8 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="header-inner">
-          <Link to="/" className="logo">
-            PC Comparator
-          </Link>
-          <nav className="nav">
-            <Link to="/">Каталог</Link>
-          </nav>
+          <Link to="/" className="logo">PC Comparator</Link>
+          <nav className="nav"><Link to="/">Каталог</Link></nav>
 
           <div className="api-key-block">
             <div className="api-key-row">
@@ -208,28 +206,14 @@ function App() {
                 <span className="help-tip" tabIndex={0}>
                   ?
                   <span className="help-tip-content">
-                    Ключ — живые цены. Без ключа — open-data. Таймаут картинок и тема — в Настройках.
+                    Ключ — живые цены. Без ключа — open-data. Картинки: Google CSE или DuckDuckGo.
                   </span>
                 </span>
               </label>
-              <input
-                id="api-key-input"
-                type="password"
-                className="api-key-input"
-                placeholder="ak_live_..."
-                value={apiKeyInput}
-                onChange={(e) => {
-                  setApiKeyInput(e.target.value)
-                  setApiKeyApplied(false)
-                }}
-                autoComplete="off"
-              />
-              <button type="button" className="btn btn-outline btn-sm" onClick={handleApplyKey}>
-                Применить
-              </button>
-              <a className="btn btn-ghost btn-sm link-external" href={REEF_SIGNUP_URL} target="_blank" rel="noopener noreferrer">
-                Получить ключ
-              </a>
+              <input id="api-key-input" type="password" className="api-key-input" placeholder="ak_live_..."
+                value={apiKeyInput} onChange={(e) => { setApiKeyInput(e.target.value); setApiKeyApplied(false) }} autoComplete="off" />
+              <button type="button" className="btn btn-outline btn-sm" onClick={handleApplyKey}>Применить</button>
+              <a className="btn btn-ghost btn-sm link-external" href={REEF_SIGNUP_URL} target="_blank" rel="noopener noreferrer">Получить ключ</a>
             </div>
             <div className="api-key-extra">
               <label className="economy-check">
@@ -241,41 +225,20 @@ function App() {
           </div>
 
           <div className="header-actions">
-            <button type="button" className="btn btn-outline btn-sm" onClick={openSettings} disabled={updating}>
-              Настройки
-            </button>
-            <button className="btn btn-primary" onClick={() => handleUpdateDb()} disabled={updating}>
-              {updating ? 'Обновление…' : 'Обновить базу'}
-            </button>
-            <button type="button" className="btn btn-outline" onClick={handleFreeUpdate} disabled={updating}>
-              Без ключа
-            </button>
-            <button type="button" className="btn btn-outline btn-sm" onClick={handleExport} disabled={updating}>
-              Экспорт
-            </button>
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()} disabled={updating}>
-              Импорт
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="application/json,.json"
-              hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) void handleImportFile(f)
-                e.target.value = ''
-              }}
-            />
+            <button type="button" className="btn btn-outline btn-sm" onClick={openSettings} disabled={updating}>Настройки</button>
+            <button className="btn btn-primary" onClick={() => handleUpdateDb()} disabled={updating}>{updating ? 'Обновление…' : 'Обновить базу'}</button>
+            <button type="button" className="btn btn-outline" onClick={handleFreeUpdate} disabled={updating}>Без ключа</button>
+            <button type="button" className="btn btn-outline btn-sm" onClick={handleExport} disabled={updating}>Экспорт</button>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()} disabled={updating}>Импорт</button>
+            <input ref={fileRef} type="file" accept="application/json,.json" hidden
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImportFile(f); e.target.value = '' }} />
           </div>
         </div>
 
         {updating && (
           <div className="progress-panel" role="status" aria-live="polite">
             <div className="progress-panel-inner">
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${progressPct}%` }} />
-              </div>
+              <div className="progress-track"><div className="progress-fill" style={{ width: `${progressPct}%` }} /></div>
               <div className="progress-meta">
                 <span className="progress-op">{progressOp || 'Обновление…'}</span>
                 <span className="progress-pct">{Math.round(progressPct)}%</span>
@@ -304,10 +267,7 @@ function App() {
       {selected.length >= 2 && (
         <div className="compare-bar">
           <div className="compare-bar-inner">
-            <span>
-              Выбрано: {selected.length} / 4
-              <span className="selected-names"> ({selected.map((s) => s.name).join(', ')})</span>
-            </span>
+            <span>Выбрано: {selected.length} / 4<span className="selected-names"> ({selected.map((s) => s.name).join(', ')})</span></span>
             <div className="compare-bar-actions">
               <button className="btn btn-ghost" onClick={clearSelection}>Очистить</button>
               <button className="btn btn-primary" onClick={goToCompare}>Перейти к сравнению</button>
@@ -326,10 +286,7 @@ function App() {
             <div className="modal-body">
               <label className="field">
                 <span>Тема сайта</span>
-                <select
-                  value={draft.theme}
-                  onChange={(e) => setDraft({ ...draft, theme: e.target.value as AppSettings['theme'] })}
-                >
+                <select value={draft.theme} onChange={(e) => setDraft({ ...draft, theme: e.target.value as AppSettings['theme'] })}>
                   <option value="light">Светлая</option>
                   <option value="dark">Тёмная</option>
                   <option value="system">Как в системе</option>
@@ -338,95 +295,62 @@ function App() {
 
               <label className="field">
                 <span>Таймаут поиска картинки (сек, 1–99)</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={99}
-                  value={draft.imageTimeoutSec}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      imageTimeoutSec: Math.max(1, Math.min(99, Number(e.target.value) || 1)),
-                    })
-                  }
-                />
-                <small>Если поиск дольше — «Превышено время…» и переход к следующему товару</small>
+                <input type="number" min={1} max={99} value={draft.imageTimeoutSec}
+                  onChange={(e) => setDraft({ ...draft, imageTimeoutSec: Math.max(1, Math.min(99, Number(e.target.value) || 1)) })} />
               </label>
 
               <label className="field">
                 <span>Макс. товаров для web-поиска картинок</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={500}
-                  value={draft.maxWebImages}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      maxWebImages: Math.max(0, Math.min(500, Number(e.target.value) || 0)),
-                    })
-                  }
-                />
+                <input type="number" min={0} max={500} value={draft.maxWebImages}
+                  onChange={(e) => setDraft({ ...draft, maxWebImages: Math.max(0, Math.min(500, Number(e.target.value) || 0)) })} />
               </label>
 
               <label className="field check">
-                <input
-                  type="checkbox"
-                  checked={draft.webImages}
-                  onChange={(e) => setDraft({ ...draft, webImages: e.target.checked })}
-                />
-                <span>Искать картинки в интернете (Wikimedia / Openverse)</span>
+                <input type="checkbox" checked={draft.webImages} onChange={(e) => setDraft({ ...draft, webImages: e.target.checked })} />
+                <span>Искать картинки (Google CSE / DuckDuckGo / Wikimedia)</span>
+              </label>
+
+              <label className="field">
+                <span>Google CSE API key</span>
+                <input type="password" value={draft.googleCseKey}
+                  onChange={(e) => setDraft({ ...draft, googleCseKey: e.target.value })}
+                  placeholder="AIza..." autoComplete="off" />
+                <small>
+                  Официальные Google Images через Custom Search. Без ключа — первая превьюшка DuckDuckGo.
+                  Ключ: Google Cloud → Custom Search API. CX: programmablesearch.google.com (тип «изображения»).
+                </small>
+              </label>
+
+              <label className="field">
+                <span>Google Search Engine ID (cx)</span>
+                <input type="text" value={draft.googleCseCx}
+                  onChange={(e) => setDraft({ ...draft, googleCseCx: e.target.value })}
+                  placeholder="a1b2c3..." autoComplete="off" />
               </label>
 
               <label className="field">
                 <span>Товаров на странице каталога</span>
-                <input
-                  type="number"
-                  min={12}
-                  max={120}
-                  value={draft.pageSize}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      pageSize: Math.max(12, Math.min(120, Number(e.target.value) || 48)),
-                    })
-                  }
-                />
+                <input type="number" min={12} max={120} value={draft.pageSize}
+                  onChange={(e) => setDraft({ ...draft, pageSize: Math.max(12, Math.min(120, Number(e.target.value) || 48)) })} />
               </label>
 
               <label className="field check">
-                <input
-                  type="checkbox"
-                  checked={draft.compactCards}
-                  onChange={(e) => setDraft({ ...draft, compactCards: e.target.checked })}
-                />
+                <input type="checkbox" checked={draft.compactCards} onChange={(e) => setDraft({ ...draft, compactCards: e.target.checked })} />
                 <span>Компактные карточки</span>
               </label>
 
               <label className="field check">
-                <input
-                  type="checkbox"
-                  checked={draft.showOrientirPrices}
-                  onChange={(e) => setDraft({ ...draft, showOrientirPrices: e.target.checked })}
-                />
+                <input type="checkbox" checked={draft.showOrientirPrices} onChange={(e) => setDraft({ ...draft, showOrientirPrices: e.target.checked })} />
                 <span>Показывать ориентировочные цены (open-data)</span>
               </label>
 
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setDraft({ ...DEFAULT_SETTINGS })}
-              >
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDraft({ ...DEFAULT_SETTINGS })}>
                 Сбросить по умолчанию
               </button>
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn btn-outline" onClick={() => setSettingsOpen(false)}>
-                Отмена
-              </button>
-              <button type="button" className="btn btn-primary" onClick={saveSettingsForm}>
-                Сохранить
-              </button>
+              <button type="button" className="btn btn-outline" onClick={() => setSettingsOpen(false)}>Отмена</button>
+              <button type="button" className="btn btn-primary" onClick={saveSettingsForm}>Сохранить</button>
             </div>
           </div>
         </div>
