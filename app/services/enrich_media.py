@@ -10,7 +10,11 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app import models
-from app.services.image_enrichment import find_image_url, placeholder_data_uri
+from app.services.image_enrichment import (
+    find_image_url,
+    is_placeholder_url,
+    placeholder_data_uri,
+)
 
 _STOP = {
     "the", "and", "for", "with", "black", "white", "rgb", "oc", "gaming",
@@ -75,8 +79,8 @@ async def enrich_missing_media(
 ) -> dict[str, int]:
     """
     1) Доноры в той же категории.
-    2) Google CSE / DuckDuckGo / Wikimedia / Openverse.
-    3) SVG-заглушка.
+    2) Web-поиск для пустых URL и SVG-заглушек (повторный апдейт заменяет заглушки).
+    3) Если ничего — снова SVG.
     """
 
     async def _prog(msg: str, pct: float | None = None):
@@ -100,14 +104,18 @@ async def enrich_missing_media(
     web_filled = 0
     placeholder_filled = 0
     timeouts = 0
+    placeholders_replaced = 0
     await _prog("Сверка доноров: копирование спеков и картинок между похожими товарами…")
 
     for cat_id, group in by_cat.items():
-        donors_img = [c for c in group if c.image_url and not str(c.image_url).startswith("data:")]
+        donors_img = [
+            c for c in group
+            if c.image_url and not is_placeholder_url(c.image_url)
+        ]
         donors_spec = [c for c in group if len(_parse_specs(c.specs)) >= 2]
 
         for c in group:
-            if not c.image_url and donors_img:
+            if is_placeholder_url(c.image_url) and donors_img:
                 best, best_s = None, 0.5
                 for d in donors_img:
                     if d.id == c.id:
@@ -115,9 +123,12 @@ async def enrich_missing_media(
                     s = _name_similarity(c.name or "", d.name or "")
                     if s > best_s:
                         best_s, best = s, d
-                if best and best.image_url:
+                if best and best.image_url and not is_placeholder_url(best.image_url):
+                    was_ph = is_placeholder_url(c.image_url)
                     c.image_url = best.image_url
                     images_filled += 1
+                    if was_ph:
+                        placeholders_replaced += 1
                     if len(_parse_specs(c.specs)) < 2:
                         ds = _parse_specs(best.specs)
                         if ds:
@@ -139,30 +150,36 @@ async def enrich_missing_media(
                         c.specs = json.dumps(merged, ensure_ascii=False)
                         specs_filled += 1
                         cur = merged
-                    if not c.image_url and best.image_url and not str(best.image_url).startswith("data:"):
+                    if is_placeholder_url(c.image_url) and best.image_url and not is_placeholder_url(best.image_url):
                         c.image_url = best.image_url
                         images_filled += 1
+                        placeholders_replaced += 1
 
     db.commit()
 
     if web_images:
-        need = [c for c in db.query(models.Component).all() if not c.image_url][:max_web]
+        # Пустые + SVG-заглушки — ищем снова реальные картинки
+        need = [
+            c for c in db.query(models.Component).all()
+            if is_placeholder_url(c.image_url)
+        ][:max_web]
         timeout = max(1.0, min(99.0, float(image_timeout_sec or 15)))
-        src_note = "Google CSE + DDG" if google_api_key else "DuckDuckGo + Wikimedia"
         await _prog(
-            f"Поиск картинок ({src_note}): {len(need)} товаров, таймаут {int(timeout)} с…"
+            f"Поиск картинок (Google/DDG/Bing/Wiki/Openverse): "
+            f"{len(need)} без фото или с заглушкой, таймаут {int(timeout)} с…"
         )
         async with httpx.AsyncClient(
             timeout=min(timeout + 2, 25.0),
             headers={
-                "User-Agent": "PCComparator/0.4.6 (+https://github.com/DoctorGreeb/pc-component-comparator)",
-                "Accept": "application/json",
+                "User-Agent": "PCComparator/0.4.8 (+https://github.com/DoctorGreeb/pc-component-comparator)",
+                "Accept": "application/json, text/html, */*",
             },
             follow_redirects=True,
         ) as client:
             for i, c in enumerate(need, 1):
                 cat_name = cats.get(c.category_id)
                 short = (c.name or "")[:70]
+                was_placeholder = is_placeholder_url(c.image_url)
                 await _prog(f"[{i}/{len(need)}] Ищем картинку: {short}")
                 try:
                     url, status, host = await find_image_url(
@@ -182,27 +199,30 @@ async def enrich_missing_media(
                         f"[{i}/{len(need)}] Превышено время поиска картинки ({int(timeout)} с): {short}"
                     )
                     await asyncio.sleep(1.8)
-                    c.image_url = placeholder_data_uri(cat_name)
-                    placeholder_filled += 1
+                    if is_placeholder_url(c.image_url):
+                        c.image_url = placeholder_data_uri(cat_name)
+                        placeholder_filled += 1
                 elif url and status == "ok":
                     c.image_url = url
                     web_filled += 1
+                    if was_placeholder:
+                        placeholders_replaced += 1
                     await _prog(
                         f"[{i}/{len(need)}] Успешно загружена картинка ← {host}: {short}"
                     )
                 else:
-                    c.image_url = placeholder_data_uri(cat_name)
-                    placeholder_filled += 1
+                    if is_placeholder_url(c.image_url):
+                        c.image_url = placeholder_data_uri(cat_name)
+                        placeholder_filled += 1
                     await _prog(f"[{i}/{len(need)}] Картинка не найдена, SVG-заглушка: {short}")
                 if i % 10 == 0:
                     db.commit()
         db.commit()
 
-    left = (
-        db.query(models.Component)
-        .filter((models.Component.image_url == None) | (models.Component.image_url == ""))  # noqa: E711
-        .all()
-    )
+    left = [
+        c for c in db.query(models.Component).all()
+        if is_placeholder_url(c.image_url) and not c.image_url
+    ]
     for c in left:
         c.image_url = placeholder_data_uri(cats.get(c.category_id))
         placeholder_filled += 1
@@ -214,5 +234,6 @@ async def enrich_missing_media(
         "specs_filled": specs_filled,
         "web_filled": web_filled,
         "placeholder_filled": placeholder_filled,
+        "placeholders_replaced": placeholders_replaced,
         "timeouts": timeouts,
     }
