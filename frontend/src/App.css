@@ -90,6 +90,51 @@
   color: #059669;
 }
 
+.api-key-extra {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.economy-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.credits-banner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 10px 20px;
+  font-size: 0.875rem;
+  background: #fff7ed;
+  color: #9a3412;
+  border-top: 1px solid #fed7aa;
+}
+
+.credits-banner a,
+.linkish {
+  color: #c2410c;
+  font-weight: 600;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: inherit;
+}
+
 .btn-sm {
   padding: 6px 12px;
   font-size: 0.8rem;
@@ -122,7 +167,7 @@
   top: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%);
-  width: 280px;
+  width: 300px;
   padding: 10px 12px;
   background: #1e293b;
   color: #f8fafc;
@@ -165,6 +210,7 @@
   font-size: 0.9rem;
   transition: background 0.15s, color 0.15s;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .btn-primary {
@@ -189,6 +235,11 @@
 
 .btn-outline:hover:not(:disabled) {
   background: #f3f4f6;
+}
+
+.btn-outline:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .btn-ghost {
