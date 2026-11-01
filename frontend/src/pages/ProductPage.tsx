@@ -5,6 +5,7 @@ import {
   ProductEnrichment,
   fetchComponent,
   fetchProductEnrichment,
+  findComponentSpecs,
   formatPrice,
 } from '../api'
 import './ProductPage.css'
@@ -38,6 +39,9 @@ export function ProductPage() {
   const [enrich, setEnrich] = useState<ProductEnrichment | null>(null)
   const [loading, setLoading] = useState(true)
   const [enrichLoading, setEnrichLoading] = useState(true)
+  const [specSearchLoading, setSpecSearchLoading] = useState(false)
+  const [specSearchMessage, setSpecSearchMessage] = useState<string | null>(null)
+  const [specSearchError, setSpecSearchError] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -88,6 +92,25 @@ export function ProductPage() {
     () => Object.entries(specs).filter(([, v]) => v && v.trim()),
     [specs],
   )
+
+  const handleFindSpecs = async () => {
+    setSpecSearchLoading(true)
+    setSpecSearchMessage(null)
+    setSpecSearchError(false)
+    try {
+      const result = await findComponentSpecs(componentId)
+      setSpecSearchMessage(result.message)
+      if (result.status === 'ok' || result.status === 'already_filled') {
+        const fresh = await fetchComponent(componentId)
+        setItem(fresh)
+      }
+    } catch (e) {
+      setSpecSearchError(true)
+      setSpecSearchMessage(e instanceof Error ? e.message : 'Не удалось найти характеристики')
+    } finally {
+      setSpecSearchLoading(false)
+    }
+  }
 
   const prices = useMemo(() => {
     if (!item?.prices?.length) return []
@@ -221,7 +244,22 @@ export function ProductPage() {
       <section className="product-section">
         <h2>Характеристики</h2>
         {specEntries.length === 0 ? (
-          <p className="muted">Характеристики не заполнены.</p>
+          <div className="product-specs-empty">
+            <p className="muted">Характеристики не заполнены.</p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleFindSpecs}
+              disabled={specSearchLoading}
+            >
+              {specSearchLoading ? 'Ищем характеристики…' : 'Найти характеристики'}
+            </button>
+            {specSearchMessage && (
+              <p className={specSearchError ? 'product-specs-error' : 'muted'} role="status">
+                {specSearchMessage}
+              </p>
+            )}
+          </div>
         ) : (
           <table className="product-specs">
             <tbody>
