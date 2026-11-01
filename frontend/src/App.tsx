@@ -31,6 +31,7 @@ function App() {
   const [updating, setUpdating] = useState(false)
   const [progressPct, setProgressPct] = useState(0)
   const [progressOp, setProgressOp] = useState('')
+  const [syncLogs, setSyncLogs] = useState<string[]>([])
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [apiKeyApplied, setApiKeyApplied] = useState(false)
@@ -112,6 +113,7 @@ function App() {
     setUpdateMsg(null)
     setProgressPct(1)
     setProgressOp('Запуск обновления…')
+    setSyncLogs([])
     try {
       const res = await updateDatabaseWithProgress(
         {
@@ -127,6 +129,7 @@ function App() {
         (ev) => {
           setProgressPct(Math.max(0, Math.min(100, ev.pct ?? 0)))
           if (ev.op) setProgressOp(ev.op)
+          if (ev.log) setSyncLogs((prev) => [...prev, `${new Date().toLocaleTimeString('ru-RU')}  ${ev.log}`].slice(-500))
         },
       )
       setCreditsExhausted(!!res.credits_exhausted)
@@ -249,6 +252,14 @@ function App() {
                 <span className="progress-op">{progressOp || 'Обновление…'}</span>
                 <span className="progress-pct">{Math.round(progressPct)}%</span>
               </div>
+              {settings.showSyncLogs && (
+                <details className="sync-log" open>
+                  <summary>Подробный журнал синхронизации <span>{syncLogs.length} событий</span></summary>
+                  <div className="sync-log-list">
+                    {syncLogs.length === 0 ? <div className="sync-log-empty">Ожидание событий от сервера…</div> : syncLogs.map((line, index) => <div className="sync-log-line" key={index}>{line}</div>)}
+                  </div>
+                </details>
+              )}
             </div>
           </div>
         )}
@@ -342,6 +353,10 @@ function App() {
               <label className="field check">
                 <input type="checkbox" checked={draft.compactCards} onChange={(e) => setDraft({ ...draft, compactCards: e.target.checked })} />
                 <span>Компактные карточки</span>
+              </label>
+              <label className="field check">
+                <input type="checkbox" checked={draft.showSyncLogs} onChange={(e) => setDraft({ ...draft, showSyncLogs: e.target.checked })} />
+                <span>Подробный журнал обновления базы (адреса API, запросы, ответы и ошибки)</span>
               </label>
 
               <label className="field check">
