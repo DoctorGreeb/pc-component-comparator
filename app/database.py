@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -8,6 +9,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "pc_components.db"
+
+# Если раньше БД лежала в корне — переносим один раз
+_legacy = BASE_DIR / "pc_components.db"
+if _legacy.exists() and not DB_PATH.exists():
+    try:
+        shutil.copy2(_legacy, DB_PATH)
+    except Exception:
+        pass
 
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
