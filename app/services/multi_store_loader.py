@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 import httpx
 from sqlalchemy.orm import Session
@@ -22,6 +22,11 @@ from app.services.dns_loader import (
 )
 
 REEF_API_BASE = "https://api.reefapi.com"
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+async def _progress(callback: ProgressCallback | None, message: str) -> None:
+    if callback:
+        await callback(message)
 
 # Короткие запросы по категориям (экономия кредитов)
 YM_QUERIES: dict[str, list[str]] = {
@@ -184,6 +189,7 @@ async def load_yandex_market(
     api_key: str,
     economy: bool = True,
     max_per_query: int = 12,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, int]:
     categories = {c.name: c for c in db.query(models.Category).all()}
     store = _ensure_store(db, "Яндекс Маркет", "https://market.yandex.ru")
@@ -196,12 +202,18 @@ async def load_yandex_market(
     queries_ok = 0
     errors = 0
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    all_queries = [(cat, query) for cat, queries in queries_map.items() for query in queries if categories.get(cat)]
+    query_index = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=12.0)) as client:
         for cat_name, queries in queries_map.items():
             cat = categories.get(cat_name)
             if not cat:
                 continue
             for query in queries:
+                query_index += 1
+                endpoint = REEF_API_BASE + "/yandex-market/v1/search"
+                await _progress(on_progress, f"Яндекс Маркет · запрос {query_index}/{len(all_queries)} · POST {endpoint} · query=\"{query}\"")
+                started = asyncio.get_running_loop().time()
                 try:
                     data = await _reef_post(
                         client,
@@ -211,6 +223,7 @@ async def load_yandex_market(
                     )
                     results = data.get("results") or []
                     queries_ok += 1
+                    await _progress(on_progress, f"Яндекс Маркет · ответ {query_index}/{len(all_queries)} · HTTP 200 · получено {len(results)} позиций · {asyncio.get_running_loop().time()-started:.1f} с")
                     for item in results[:max_per_query]:
                         name = item.get("title") or ""
                         if not name:
@@ -241,8 +254,9 @@ async def load_yandex_market(
                     db.commit()
                 except CreditsExhaustedError:
                     raise
-                except Exception:
+                except Exception as exc:
                     errors += 1
+                    await _progress(on_progress, f"Яндекс Маркет · ОШИБКА запроса {query_index}/{len(all_queries)} · {type(exc).__name__}: {exc}")
                     continue
 
     return {"components_added": added, "queries_ok": queries_ok, "errors": errors}
@@ -253,6 +267,7 @@ async def load_wildberries(
     api_key: str,
     economy: bool = True,
     max_per_query: int = 15,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, int]:
     categories = {c.name: c for c in db.query(models.Category).all()}
     store = _ensure_store(db, "Wildberries", "https://www.wildberries.ru")
@@ -271,6 +286,10 @@ async def load_wildberries(
             if not cat:
                 continue
             for query in queries:
+                query_index += 1
+                endpoint = REEF_API_BASE + "/wildberries/v1/search"
+                await _progress(on_progress, f"Wildberries · запрос {query_index}/{len(all_queries)} · POST {endpoint} · query=\"{query}\" · country=ru")
+                started = asyncio.get_running_loop().time()
                 try:
                     data = await _reef_post(
                         client,
@@ -280,6 +299,7 @@ async def load_wildberries(
                     )
                     results = data.get("results") or []
                     queries_ok += 1
+                    await _progress(on_progress, f"Wildberries · ответ {query_index}/{len(all_queries)} · HTTP 200 · получено {len(results)} позиций · {asyncio.get_running_loop().time()-started:.1f} с")
                     for item in results[:max_per_query]:
                         name = item.get("title") or ""
                         if not name:
@@ -311,8 +331,9 @@ async def load_wildberries(
                     db.commit()
                 except CreditsExhaustedError:
                     raise
-                except Exception:
+                except Exception as exc:
                     errors += 1
+                    await _progress(on_progress, f"Wildberries · ОШИБКА запроса {query_index}/{len(all_queries)} · {type(exc).__name__}: {exc}")
                     continue
 
     return {"components_added": added, "queries_ok": queries_ok, "errors": errors}
@@ -323,6 +344,7 @@ async def load_extra_stores(
     api_key: str | None = None,
     economy: bool = True,
     sources: list[str] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     key = get_api_key(api_key)
     if not key:
@@ -333,9 +355,11 @@ async def load_extra_stores(
 
     if "yandex_market" in sources:
         try:
+            await _progress(on_progress, "Яндекс Маркет · начало синхронизации")
             out["sources"]["yandex_market"] = await load_yandex_market(
-                db, key, economy=economy
+                db, key, economy=economy, on_progress=on_progress
             )
+            await _progress(on_progress, "Яндекс Маркет · завершено · " + str(out["sources"]["yandex_market"].get("components_added", 0)) + " новых позиций; ошибок: " + str(out["sources"]["yandex_market"].get("errors", 0)))
         except CreditsExhaustedError:
             raise
         except Exception as e:
@@ -343,9 +367,11 @@ async def load_extra_stores(
 
     if "wildberries" in sources:
         try:
+            await _progress(on_progress, "Wildberries · начало синхронизации")
             out["sources"]["wildberries"] = await load_wildberries(
-                db, key, economy=economy
+                db, key, economy=economy, on_progress=on_progress
             )
+            await _progress(on_progress, "Wildberries · завершено · " + str(out["sources"]["wildberries"].get("components_added", 0)) + " новых позиций; ошибок: " + str(out["sources"]["wildberries"].get("errors", 0)))
         except CreditsExhaustedError:
             raise
         except Exception as e:
