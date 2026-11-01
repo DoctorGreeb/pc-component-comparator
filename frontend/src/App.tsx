@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
-import { updateDatabase, updateDatabaseFree, exportCatalog, importCatalog } from './api'
+import { updateDatabaseWithProgress, exportCatalog, importCatalog } from './api'
 import './App.css'
 
 const STORAGE_KEY = 'reefapi_key'
@@ -19,6 +19,8 @@ export interface SelectedItem {
 function App() {
   const [selected, setSelected] = useState<SelectedItem[]>([])
   const [updating, setUpdating] = useState(false)
+  const [progressPct, setProgressPct] = useState(0)
+  const [progressOp, setProgressOp] = useState('')
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [apiKeyApplied, setApiKeyApplied] = useState(false)
@@ -61,39 +63,39 @@ function App() {
     setUpdateMsg('Ключ сохранён. Можно обновить базу.')
   }
 
-  const handleFreeUpdate = async () => {
-    setUpdating(true)
-    setUpdateMsg(null)
-    try {
-      const res = await updateDatabaseFree()
-      setCreditsExhausted(false)
-      setUpdateMsg(res.message + (res.note ? ` — ${res.note}` : ''))
-    } catch (e) {
-      setUpdateMsg(e instanceof Error ? e.message : 'Ошибка бесплатной загрузки')
-    } finally {
-      setUpdating(false)
-    }
-  }
-
-  const handleUpdateDb = async (forceEconomy?: boolean) => {
+  const runUpdate = async (opts: { freeOnly?: boolean; forceEconomy?: boolean }) => {
     const key = apiKeyInput.trim() || localStorage.getItem(STORAGE_KEY) || undefined
-    if (!key) {
-      await handleFreeUpdate()
-      return
-    }
-    const useEconomy = forceEconomy ?? economy
+    const freeOnly = !!opts.freeOnly || !key
     setUpdating(true)
     setUpdateMsg(null)
+    setProgressPct(1)
+    setProgressOp('Запуск обновления…')
     try {
-      const res = await updateDatabase(key, useEconomy)
+      const res = await updateDatabaseWithProgress(
+        {
+          apiKey: freeOnly ? undefined : key,
+          economy: opts.forceEconomy ?? economy,
+          freeOnly,
+        },
+        (ev) => {
+          setProgressPct(Math.max(0, Math.min(100, ev.pct ?? 0)))
+          if (ev.op) setProgressOp(ev.op)
+        },
+      )
       setCreditsExhausted(!!res.credits_exhausted)
+      setProgressPct(100)
+      setProgressOp(res.status === 'error' ? 'Ошибка' : 'Готово')
       setUpdateMsg(res.message + (res.note ? ` — ${res.note}` : ''))
     } catch (e) {
+      setProgressOp('Ошибка')
       setUpdateMsg(e instanceof Error ? e.message : 'Ошибка обновления базы')
     } finally {
       setUpdating(false)
     }
   }
+
+  const handleFreeUpdate = () => void runUpdate({ freeOnly: true })
+  const handleUpdateDb = (forceEconomy?: boolean) => void runUpdate({ forceEconomy })
 
   const handleExport = async () => {
     try {
@@ -121,8 +123,12 @@ function App() {
         return
       }
       setUpdating(true)
+      setProgressPct(30)
+      setProgressOp('Импорт JSON…')
       const res = await importCatalog(items)
-      setUpdateMsg(res.message)
+      setProgressPct(100)
+      setProgressOp('Готово')
+      setUpdateMsg((res as { message?: string }).message || `Импорт: +${(res as { added?: number }).added ?? 0}`)
       setCreditsExhausted(false)
     } catch (e) {
       setUpdateMsg(e instanceof Error ? e.message : 'Ошибка импорта')
@@ -222,6 +228,23 @@ function App() {
           </div>
         </div>
 
+        {updating && (
+          <div className="progress-panel" role="status" aria-live="polite">
+            <div className="progress-panel-inner">
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <div className="progress-meta">
+                <span className="progress-op">{progressOp || 'Обновление…'}</span>
+                <span className="progress-pct">{Math.round(progressPct)}%</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {creditsExhausted && (
           <div className="credits-banner">
             <strong>Кредиты ReefAPI закончились.</strong>{' '}
@@ -230,7 +253,7 @@ function App() {
           </div>
         )}
 
-        {updateMsg && <div className="update-msg">{updateMsg}</div>}
+        {updateMsg && !updating && <div className="update-msg">{updateMsg}</div>}
       </header>
 
       <main className="main">
