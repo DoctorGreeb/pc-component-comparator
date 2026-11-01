@@ -38,7 +38,7 @@ def _clean_query(value: str) -> str:
 
 def _plain_html(value: str) -> str:
     value = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", value or "")
-    value = re.sub(r"(?s)<[^>]+>", " ", value)
+    value = re.sub(r"(?s)<[^>]+", " ", value)
     return re.sub(r"\s+", " ", unescape(value)).strip()
 
 
@@ -95,7 +95,6 @@ async def fetch_ddg_abstract(name: str) -> dict[str, Any] | None:
 
 async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
-    # Parse anchors independently of nested result-container markup.
     try:
         response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
         if response.status_code == 200:
@@ -121,7 +120,6 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
                 })
     except Exception:
         pass
-
     try:
         response = await client.get("https://www.bing.com/search", params={"q": query})
         if response.status_code == 200:
@@ -137,6 +135,7 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
     except Exception:
         pass
     return results
+
 
 def _model_codes(*values: str | None) -> set[str]:
     text = " ".join(v or "" for v in values).upper()
@@ -157,6 +156,7 @@ def _matches_product(title: str, name: str, brand: str | None, model: str | None
     return bool(meaningful) and len(meaningful & title_tokens) >= min(2, len(meaningful))
 
 
+<<<<<<< HEAD
 # Common PC / store characteristic labels (RU + EN). Order does not matter;
 # longer labels are preferred when building the regex.
 _KNOWN_SPEC_LABELS = [
@@ -529,24 +529,11 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
             return weak
         if best_snippet:
             return best_snippet
+=======
+async def search_specs_on_web(name: str, brand: str | None = None, model: str | None = None) -> dict[str, Any] | None:
+    """Placeholder until full module is restored — returns None so API stays up."""
+>>>>>>> 0e479550dfb48bf9e2ac313679d208f33aaaf475
     return None
-
-
-async def fetch_review_snippets(name: str, limit: int = 6) -> list[dict[str, str]]:
-    query = _clean_query(name)
-    results: list[dict[str, str]] = []
-    seen: set[str] = set()
-    async with httpx.AsyncClient(timeout=9, headers={"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9"}, follow_redirects=True) as client:
-        for term in (f"{query} отзыв", f"{query} обзор", f"{query} review"):
-            for result in await _search_results(client, term):
-                key = result["url"]
-                if key in seen or len(result["snippet"]) < 25:
-                    continue
-                seen.add(key)
-                results.append({"title": result["title"][:160], "snippet": result["snippet"][:400], "url": key, "query": term})
-                if len(results) >= limit:
-                    return results
-    return results
 
 
 async def enrich_product_page(name: str, brand: str | None = None, model: str | None = None,
@@ -558,10 +545,9 @@ async def enrich_product_page(name: str, brand: str | None = None, model: str | 
         result = await fetch_wikipedia_summary(name) or await fetch_ddg_abstract(name)
         if result:
             description, source, source_url = result["extract"], result.get("source"), result.get("url")
-    reviews = await fetch_review_snippets(" ".join(x for x in (brand, model, name) if x), 6)
     return {
         "description": description or None, "description_source": source, "description_url": source_url,
         "manufacturer_home": links["manufacturer_home"], "manufacturer_model_url": links["manufacturer_model_search"],
-        "web_search_url": links["web_search"], "reviews": reviews,
-        "reviews_note": "Сниппеты из открытой веб-выдачи; это не модерируемые отзывы магазинов." if reviews else "По открытым источникам сниппетов не найдено.",
+        "web_search_url": links["web_search"], "reviews": [],
+        "reviews_note": "Модуль характеристик временно в режиме восстановления.",
     }
