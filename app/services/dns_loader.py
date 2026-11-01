@@ -14,7 +14,6 @@ from app import models
 
 REEF_API_BASE = "https://api.reefapi.com"
 
-# Запросы по категориям — реальные популярные позиции DNS
 CATEGORY_QUERIES: dict[str, list[str]] = {
     "cpu": [
         "процессор AMD Ryzen 5",
@@ -64,8 +63,11 @@ CATEGORY_QUERIES: dict[str, list[str]] = {
 }
 
 
-def get_api_key() -> str | None:
-    return os.getenv("REEFAPI_KEY")
+def get_api_key(override: str | None = None) -> str | None:
+    if override and override.strip():
+        return override.strip()
+    key = os.getenv("REEFAPI_KEY")
+    return key.strip() if key else None
 
 
 async def reef_search(api_key: str, query: str, page: int = 1) -> list[dict[str, Any]]:
@@ -104,10 +106,6 @@ def upsert_component_from_dns(
     store: models.Store,
     item: dict[str, Any],
 ) -> bool:
-    """
-    Создаёт или обновляет компонент и цену DNS.
-    Возвращает True, если был добавлен новый компонент.
-    """
     external_id = item.get("product_id") or item.get("code")
     if not external_id:
         return False
@@ -116,7 +114,6 @@ def upsert_component_from_dns(
     if not name:
         return False
 
-    # Ищем существующую цену по external_id магазина
     existing_price = (
         db.query(models.Price)
         .filter(
@@ -140,7 +137,6 @@ def upsert_component_from_dns(
     url = item.get("url")
 
     if existing_price:
-        # обновляем цену и компонент
         component = existing_price.component
         component.name = name
         component.brand = brand
@@ -178,16 +174,15 @@ def upsert_component_from_dns(
     return True
 
 
-async def load_dns_catalog(db: Session, max_per_query: int = 12) -> dict[str, int]:
-    """
-    Загружает реальные товары DNS по заданным запросам.
-    Возвращает статистику.
-    """
-    api_key = get_api_key()
-    if not api_key:
-        raise RuntimeError("REEFAPI_KEY не задан. Укажите ключ в .env")
+async def load_dns_catalog(
+    db: Session,
+    max_per_query: int = 12,
+    api_key: str | None = None,
+) -> dict[str, int]:
+    key = get_api_key(api_key)
+    if not key:
+        raise RuntimeError("REEFAPI_KEY не задан")
 
-    # категории и DNS-магазин
     categories = {c.name: c for c in db.query(models.Category).all()}
     store = db.query(models.Store).filter(models.Store.name == "DNS").first()
     if not store:
@@ -206,7 +201,7 @@ async def load_dns_catalog(db: Session, max_per_query: int = 12) -> dict[str, in
 
         for query in queries:
             try:
-                results = await reef_search(api_key, query, page=1)
+                results = await reef_search(key, query, page=1)
                 updated_queries += 1
                 for item in results[:max_per_query]:
                     if upsert_component_from_dns(db, category, store, item):
