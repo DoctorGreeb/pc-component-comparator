@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: pc-component-comparator-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FRONTEND_ORIGINS
+        value: https://pc-component-comparator.onrender.com
+
+  - type: web
+    name: pc-component-comparator
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://pc-component-comparator-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
