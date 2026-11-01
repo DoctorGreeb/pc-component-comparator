@@ -159,7 +159,7 @@ def _matches_product(title: str, name: str, brand: str | None, model: str | None
 
 def _spec_pairs_from_text(text: str) -> dict[str, str]:
     text = unescape(re.sub(r"<[^>]+>", " ", text or ""))
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     specs: dict[str, str] = {}
     labels = [
         "Макс. скорость вращения, об/мин", "Макс. воздушный поток, CFM",
@@ -170,7 +170,7 @@ def _spec_pairs_from_text(text: str) -> dict[str, str]:
     ]
     label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
     # Extract known field names up to the next known field, even when snippets omit punctuation.
-    pattern = rf"(?i)(?<![А-ЯЁA-Zа-яёa-z0-9])(?P<key>{label_pattern})\\s*:?\\s*(?P<value>.*?)(?=\\s+(?:{label_pattern})(?:\\s|:)|$)"
+    pattern = rf"(?i)(?<![А-ЯЁA-Zа-яёa-z0-9])(?P<key>{label_pattern})\s*:?\s*(?P<value>.*?)(?=\s+(?:{label_pattern})(?:\s|:)|$)"
     for match in re.finditer(pattern, text):
         key = match.group("key").strip()
         value = match.group("value").strip(" .;,:-")
@@ -178,7 +178,7 @@ def _spec_pairs_from_text(text: str) -> dict[str, str]:
             specs[key] = value
     # Also support other clearly-labelled pairs in compact snippets.
     for key, value in re.findall(
-        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.-]{2,45})\\s*:\\s*([^:;|]{1,80})",
+        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.-]{2,45})\s*:\s*([^:;|]{1,80})",
         text,
     ):
         key, value = key.strip(" .:-"), value.strip(" .;,:-")
