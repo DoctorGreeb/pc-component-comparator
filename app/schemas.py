@@ -113,6 +113,22 @@ class UpdateDatabaseRequest(BaseModel):
         False,
         description="Только бесплатные источники без ReefAPI",
     )
+    image_timeout_sec: int = Field(
+        15,
+        ge=1,
+        le=99,
+        description="Таймаут поиска одной картинки (сек)",
+    )
+    max_web_images: int = Field(
+        100,
+        ge=0,
+        le=500,
+        description="Макс. товаров для web-поиска картинок",
+    )
+    web_images: bool = Field(
+        True,
+        description="Искать картинки в интернете, если нет донора",
+    )
 
 
 class UpdateDatabaseResponse(BaseModel):
