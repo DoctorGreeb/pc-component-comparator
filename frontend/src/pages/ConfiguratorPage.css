@@ -20,7 +20,7 @@
   margin: 0;
   color: var(--muted, #64748b);
   font-size: 0.9rem;
-  max-width: 520px;
+  max-width: 560px;
 }
 
 .cfg-summary {
@@ -173,8 +173,8 @@
 
 .cfg-picker {
   width: 100%;
-  max-width: 640px;
-  max-height: 85vh;
+  max-width: 680px;
+  max-height: 90vh;
   background: var(--modal-bg, var(--surface, #fff));
   border-radius: 14px 14px 0 0;
   display: flex;
@@ -202,6 +202,20 @@
   font-size: 1.1rem;
 }
 
+.cfg-compat-note {
+  padding: 8px 16px;
+  font-size: 0.78rem;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+}
+
+[data-theme='dark'] .cfg-compat-note {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border-color: #1e40af;
+}
+
 .cfg-picker-filters {
   display: flex;
   gap: 8px;
@@ -219,6 +233,33 @@
   border: 1px solid var(--border, #d1d5db);
   background: var(--surface, #fff);
   color: var(--text, #0f172a);
+}
+
+.cfg-spec-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.cfg-spec-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.72rem;
+  color: var(--muted, #64748b);
+  min-width: 120px;
+  flex: 1;
+}
+
+.cfg-spec-filter select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--surface, #fff);
+  color: var(--text, #0f172a);
+  font-size: 0.82rem;
 }
 
 .cfg-picker-list {
