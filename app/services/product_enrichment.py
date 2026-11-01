@@ -159,20 +159,32 @@ def _matches_product(title: str, name: str, brand: str | None, model: str | None
 
 def _spec_pairs_from_text(text: str) -> dict[str, str]:
     text = unescape(re.sub(r"<[^>]+>", " ", text or ""))
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\\s+", " ", text).strip()
     specs: dict[str, str] = {}
-    # Search snippets often contain compact "key: value" or "key value" fragments.
-    patterns = [
-        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.-]{2,55}?)\s*:\s*([^:;|]{1,100})",
-        r"(Макс\. скорость вращения|Макс\. воздушный поток|Макс\. уровень шума|Диаметр вентилятора|Количество вентиляторов|Тип подшипника|Коннектор питания|Подсветка|Размеры)\s+([^,;|]{1,80})",
+    labels = [
+        "Макс. скорость вращения, об/мин", "Макс. воздушный поток, CFM",
+        "Макс. уровень шума, дБ", "Диаметр вентилятора, мм", "Количество вентиляторов",
+        "Коннектор питания", "Тип подшипника", "Страна-изготовитель", "Количество в упаковке, шт",
+        "Размеры, мм", "Особенности", "Подсветка", "Артикул", "Высота, мм", "Ширина, мм",
+        "Глубина, мм", "Цвет", "Тип",
     ]
-    for pattern in patterns:
-        for key, value in re.findall(pattern, text, flags=re.I):
-            key, value = key.strip(" .:-"), value.strip(" .;,:-")
-            if 2 <= len(key) <= 60 and 1 <= len(value) <= 100 and key.lower() != value.lower():
-                specs.setdefault(key, value)
+    label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+    # Extract known field names up to the next known field, even when snippets omit punctuation.
+    pattern = rf"(?i)(?<![А-ЯЁA-Zа-яёa-z0-9])(?P<key>{label_pattern})\\s*:?\\s*(?P<value>.*?)(?=\\s+(?:{label_pattern})(?:\\s|:)|$)"
+    for match in re.finditer(pattern, text):
+        key = match.group("key").strip()
+        value = match.group("value").strip(" .;,:-")
+        if value and len(value) <= 180 and value.lower() != key.lower():
+            specs[key] = value
+    # Also support other clearly-labelled pairs in compact snippets.
+    for key, value in re.findall(
+        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.-]{2,45})\\s*:\\s*([^:;|]{1,80})",
+        text,
+    ):
+        key, value = key.strip(" .:-"), value.strip(" .;,:-")
+        if 2 <= len(key) <= 50 and value and len(value) <= 100:
+            specs.setdefault(key, value)
     return specs
-
 
 def _extract_spec_rows(page: str) -> dict[str, str]:
     specs: dict[str, str] = {}
