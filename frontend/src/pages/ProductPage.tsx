@@ -42,6 +42,7 @@ export function ProductPage() {
   const [specSearchLoading, setSpecSearchLoading] = useState(false)
   const [specSearchMessage, setSpecSearchMessage] = useState<string | null>(null)
   const [specSearchError, setSpecSearchError] = useState(false)
+  const [specSearchSourceUrl, setSpecSearchSourceUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -97,9 +98,12 @@ export function ProductPage() {
     setSpecSearchLoading(true)
     setSpecSearchMessage(null)
     setSpecSearchError(false)
+    setSpecSearchSourceUrl(null)
     try {
-      const result = await findComponentSpecs(componentId)
+      const savedApiKey = localStorage.getItem('reefapi_key') || undefined
+      const result = await findComponentSpecs(componentId, savedApiKey)
       setSpecSearchMessage(result.message)
+      setSpecSearchSourceUrl(result.source_url || null)
       if (result.status === 'ok' || result.status === 'already_filled') {
         const fresh = await fetchComponent(componentId)
         setItem(fresh)
@@ -255,9 +259,12 @@ export function ProductPage() {
               {specSearchLoading ? 'Ищем характеристики…' : 'Найти характеристики'}
             </button>
             {specSearchMessage && (
-              <p className={specSearchError ? 'product-specs-error' : 'muted'} role="status">
-                {specSearchMessage}
-              </p>
+              <div className={specSearchError ? 'product-specs-error' : 'muted'} role="status">
+                <p>{specSearchMessage}</p>
+                {specSearchSourceUrl && (
+                  <a href={specSearchSourceUrl} target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>
+                )}
+              </div>
             )}
           </div>
         ) : (
