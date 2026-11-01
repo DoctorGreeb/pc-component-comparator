@@ -140,35 +140,6 @@ export async function fetchCompare(ids: number[]): Promise<{
   return res.json();
 }
 
-export async function updateDatabase(
-  apiKey?: string,
-  economy = false,
-): Promise<UpdateResult> {
-  const res = await fetch(`${API_BASE}/update-database`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey || undefined, economy }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка обновления');
-  }
-  return res.json();
-}
-
-export async function updateDatabaseFree(ymlUrl?: string): Promise<UpdateResult> {
-  const res = await fetch(`${API_BASE}/update-database-free`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ free_only: true, yml_url: ymlUrl || undefined }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка бесплатной загрузки');
-  }
-  return res.json();
-}
-
 async function readSseStream(
   res: Response,
   onProgress: (ev: ProgressEvent) => void,
@@ -213,6 +184,9 @@ export async function updateDatabaseWithProgress(
     economy?: boolean;
     freeOnly?: boolean;
     ymlUrl?: string;
+    imageTimeoutSec?: number;
+    maxWebImages?: number;
+    webImages?: boolean;
   },
   onProgress: (ev: ProgressEvent) => void,
 ): Promise<UpdateResult> {
@@ -224,6 +198,9 @@ export async function updateDatabaseWithProgress(
       economy: !!options.economy,
       free_only: !!options.freeOnly,
       yml_url: options.ymlUrl || undefined,
+      image_timeout_sec: options.imageTimeoutSec ?? 15,
+      max_web_images: options.maxWebImages ?? 100,
+      web_images: options.webImages !== false,
     }),
   });
   if (!res.ok) {
