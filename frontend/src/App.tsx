@@ -38,6 +38,7 @@ function App() {
   const [economy, setEconomy] = useState(false)
   const [creditsExhausted, setCreditsExhausted] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings())
   const [draft, setDraft] = useState<AppSettings>(() => loadSettings())
   const fileRef = useRef<HTMLInputElement>(null)
@@ -201,12 +202,21 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <div className="header-inner">
+        <div className={`header-inner ${mobileToolsOpen ? "mobile-tools-open" : ""}`}>
           <Link to="/" className="logo">PC Comparator</Link>
           <nav className="nav">
             <Link to="/">Каталог</Link>
             <Link to="/configurator">Конфигуратор</Link>
           </nav>
+          <button
+            type="button"
+            className="mobile-tools-toggle"
+            aria-expanded={mobileToolsOpen}
+            onClick={() => setMobileToolsOpen((open) => !open)}
+          >
+            {mobileToolsOpen ? "Скрыть инструменты" : "Инструменты"}
+            <span aria-hidden="true">{mobileToolsOpen ? "−" : "+"}</span>
+          </button>
 
           <div className="api-key-block">
             <div className="api-key-row">
