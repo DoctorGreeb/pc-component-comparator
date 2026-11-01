@@ -377,3 +377,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 380px) {
   .grid { grid-template-columns: 1fr; }
 }
+
+
+/* Live database synchronization log */
+.sync-log { margin-top: 12px; border: 1px solid var(--border, #dbe2ea); border-radius: 12px; background: var(--surface, #fff); overflow: hidden; }
+.sync-log summary { cursor: pointer; padding: 10px 12px; font-size: 12px; font-weight: 650; color: var(--text, #263445); display: flex; justify-content: space-between; gap: 12px; }
+.sync-log summary span { color: var(--muted, #748094); font-weight: 500; }
+.sync-log-list { max-height: 220px; overflow: auto; padding: 8px 12px; border-top: 1px solid var(--border, #dbe2ea); background: var(--surface-soft, #f7f9fc); }
+.sync-log-line { padding: 4px 0; border-bottom: 1px solid var(--border, #e7ebf0); color: var(--text, #344054); font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.sync-log-line:last-child { border-bottom: 0; }
+.sync-log-empty { color: var(--muted, #748094); font-size: 12px; padding: 8px 0; }

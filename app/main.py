@@ -111,7 +111,7 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
         notes: list[str] = []
         exhausted = False
         try:
-            yield _sse({"pct": 4, "op": "Подготовка категорий и магазинов…"})
+            yield _sse({"pct": 4, "op": "Подготовка категорий и магазинов…", "log": "Проверка локальной базы данных: категории и магазины"})
             for cat in DEFAULT_CATEGORIES:
                 if not db.query(models.Category).filter(models.Category.name == cat["name"]).first():
                     db.add(models.Category(**cat))
@@ -123,14 +123,14 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
             use_free = free_only or not get_api_key(api_key)
 
             if use_free:
-                yield _sse({"pct": 12, "op": "Загрузка PCPartPicker dataset…"})
+                yield _sse({"pct": 12, "op": "Загрузка PCPartPicker dataset…", "log": "Источник: PCPartPicker dataset"})
                 try:
                     r1 = await load_pcpart_dataset(db)
                     total_added += int(r1.get("components_added") or 0)
                     notes.append(f"pcpart: +{r1.get('components_added', 0)}")
                 except Exception as e:
                     notes.append(f"pcpart: {e}")
-                yield _sse({"pct": 40, "op": "Загрузка GPU Ark…"})
+                yield _sse({"pct": 40, "op": "Загрузка GPU Ark…", "log": "Источник: GPU Ark dataset"})
                 try:
                     r2 = await load_gpu_ark(db)
                     total_added += int(r2.get("components_added") or 0)
@@ -138,13 +138,13 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                 except Exception as e:
                     notes.append(f"gpu_ark: {e}")
                 if yml_url and str(yml_url).strip():
-                    yield _sse({"pct": 55, "op": "Импорт YML…"})
+                    yield _sse({"pct": 55, "op": "Импорт YML…", "log": "Загрузка YML feed: " + str(yml_url).strip()})
                     try:
                         r3 = await load_yml_feed(db, str(yml_url).strip())
                         total_added += int(r3.get("components_added") or 0)
                     except Exception as e:
                         notes.append(f"yml: {e}")
-                yield _sse({"pct": 70, "op": f"Обогащение (таймаут картинки {image_timeout_sec} с)…"})
+                yield _sse({"pct": 70, "op": f"Обогащение (таймаут картинки {image_timeout_sec} с)…", "log": "Поиск изображений и метаданных · web_images=" + str(web_images) + " · max_web=" + str(max_web_images)})
                 try:
                     import asyncio
                     q: asyncio.Queue = asyncio.Queue()
@@ -161,11 +161,12 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                     while not task.done() or not q.empty():
                         try:
                             msg = await asyncio.wait_for(q.get(), timeout=0.4)
-                            yield _sse({"pct": 78, "op": msg})
+                            yield _sse({"pct": 78, "op": msg, "log": msg})
                         except asyncio.TimeoutError:
                             if task.done():
                                 while not q.empty():
-                                    yield _sse({"pct": 78, "op": await q.get()})
+                                    msg = await q.get()
+                                    yield _sse({"pct": 78, "op": msg, "log": msg})
                                 break
                     enrich = await task
                     notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
@@ -177,22 +178,64 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
 
             try:
                 if "dns" in sources:
-                    yield _sse({"pct": 15, "op": "Загрузка DNS…"})
-                    stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
+                    import asyncio
+                    dns_queue: asyncio.Queue = asyncio.Queue()
+                    async def dns_progress(message: str):
+                        await dns_queue.put(message)
+                    async def run_dns():
+                        return await load_dns_catalog(
+                            db, max_per_query=24, pages_per_query=2,
+                            api_key=api_key, economy=economy, on_progress=dns_progress,
+                        )
+                    yield _sse({"pct": 15, "op": "Загрузка DNS…", "log": "POST https://api.reefapi.com/dns-shop/v1/search · подготовка пакетов запросов"})
+                    dns_task = asyncio.create_task(run_dns())
+                    dns_events = 0
+                    while not dns_task.done() or not dns_queue.empty():
+                        try:
+                            message = await asyncio.wait_for(dns_queue.get(), timeout=5.0)
+                            dns_events += 1
+                            yield _sse({"pct": min(48, 15 + dns_events * 1.2), "op": message, "log": message})
+                        except asyncio.TimeoutError:
+                            if not dns_task.done():
+                                yield _sse({"pct": min(48, 15 + dns_events * 1.2), "op": "DNS: ожидание ответа API…", "log": "DNS-запросы выполняются; ожидается ответ ReefAPI."})
+                    stats = await dns_task
                     total_added += int(stats.get("components_added") or 0)
                     notes.append(f"DNS: +{stats.get('components_added', 0)}")
+                    yield _sse({"pct": 49, "op": "DNS: этап завершён", "log": "DNS итоги: " + json.dumps(stats, ensure_ascii=False)})
                     if stats.get("stopped_reason"):
                         exhausted = True
                 extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
                 if extra_sources and not exhausted:
-                    yield _sse({"pct": 50, "op": "Маркет / Wildberries…"})
-                    extra = await load_extra_stores(db, api_key=api_key, economy=economy, sources=extra_sources)
+                    import asyncio
+                    progress_queue: asyncio.Queue = asyncio.Queue()
+                    async def marketplace_progress(message: str):
+                        await progress_queue.put(message)
+                    async def run_marketplaces():
+                        return await load_extra_stores(
+                            db, api_key=api_key, economy=economy,
+                            sources=extra_sources, on_progress=marketplace_progress,
+                        )
+                    yield _sse({"pct": 50, "op": "Запуск синхронизации маркетплейсов", "log": "Подготовка запросов к https://api.reefapi.com"})
+                    marketplace_task = asyncio.create_task(run_marketplaces())
+                    marketplace_events = 0
+                    while not marketplace_task.done() or not progress_queue.empty():
+                        try:
+                            message = await asyncio.wait_for(progress_queue.get(), timeout=5.0)
+                            marketplace_events += 1
+                            pct = min(68, 50 + marketplace_events * 0.8)
+                            yield _sse({"pct": pct, "op": message, "log": message})
+                        except asyncio.TimeoutError:
+                            if not marketplace_task.done():
+                                yield _sse({"pct": min(68, 50 + marketplace_events * 0.8), "op": "Ожидание ответа ReefAPI…", "log": "Запрос выполняется; соединение ожидает ответ (таймаут запроса 45 с)."})
+                    extra = await marketplace_task
                     total_added += int(extra.get("components_added") or 0)
+                    for source_name, source_stats in (extra.get("sources") or {}).items():
+                        yield _sse({"pct": 69, "op": f"{source_name}: синхронизация завершена", "log": f"Итог {source_name}: {json.dumps(source_stats, ensure_ascii=False)}"})
             except CreditsExhaustedError as e:
                 yield _sse({"pct": 100, "op": "Кредиты закончились", "result": {"status": "credits_exhausted", "message": str(e), "components_added": total_added, "categories_ready": total_categories, "economy": economy, "credits_exhausted": True}})
                 return
 
-            yield _sse({"pct": 80, "op": f"Обогащение (таймаут {image_timeout_sec} с)…"})
+            yield _sse({"pct": 80, "op": f"Обогащение (таймаут {image_timeout_sec} с)…", "log": "Запуск поиска недостающих изображений и метаданных"})
             try:
                 import asyncio
                 q: asyncio.Queue = asyncio.Queue()

@@ -8,6 +8,7 @@ export interface AppSettings {
   pageSize: number
   compactCards: boolean
   showOrientirPrices: boolean
+  showSyncLogs: boolean
   autoRefreshOnOpen: boolean
   timeoutMessageHoldSec: number
   /** Google Custom Search API key (Programmable Search) */
@@ -24,6 +25,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pageSize: 48,
   compactCards: false,
   showOrientirPrices: true,
+  showSyncLogs: true,
   autoRefreshOnOpen: false,
   timeoutMessageHoldSec: 1,
   googleCseKey: '',

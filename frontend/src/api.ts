@@ -84,6 +84,7 @@ export interface ProgressEvent {
   op: string;
   result?: UpdateResult;
   error?: string;
+  log?: string;
 }
 
 export interface ProductReviewSnippet {
