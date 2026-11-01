@@ -13,13 +13,14 @@ load_dotenv()
 from app.database import engine, get_db, Base
 from app import models, schemas
 from app.services.dns_loader import load_dns_catalog, get_api_key, CreditsExhaustedError
+from app.services.multi_store_loader import load_extra_stores
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="PC Component Comparator",
-    description="Сравнение комплектующих ПК с данными DNS",
-    version="0.3.1",
+    description="Сравнение комплектующих ПК с данными DNS, Яндекс Маркета и WB",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -44,6 +45,8 @@ DEFAULT_CATEGORIES = [
 
 DEFAULT_STORES = [
     {"name": "DNS", "url": "https://www.dns-shop.ru"},
+    {"name": "Яндекс Маркет", "url": "https://market.yandex.ru"},
+    {"name": "Wildberries", "url": "https://www.wildberries.ru"},
     {"name": "Citilink", "url": "https://www.citilink.ru"},
     {"name": "Regard", "url": "https://www.regard.ru"},
 ]
@@ -128,7 +131,7 @@ def _component_to_list_item(c):
 
 @app.get("/")
 def root():
-    return {"message": "PC Component Comparator API", "status": "ready", "version": "0.3.1"}
+    return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.0"}
 
 
 @app.get("/health")
@@ -156,28 +159,69 @@ async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(N
             note="Введите ключ или импортируйте JSON (/catalog/export + /catalog/import).",
             components_added=0, categories_ready=total_categories, economy=economy, credits_exhausted=False,
         )
+
+    sources = (body.sources if body and body.sources else None) or [
+        "dns", "yandex_market", "wildberries"
+    ]
+    total_added = 0
+    notes = []
+    exhausted = False
+
     try:
-        stats = await load_dns_catalog(db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy)
+        if "dns" in sources:
+            stats = await load_dns_catalog(
+                db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy
+            )
+            total_added += int(stats.get("components_added") or 0)
+            notes.append(
+                f"DNS: +{stats.get('components_added', 0)} (запросов {stats.get('queries_ok', 0)})"
+            )
+            if stats.get("stopped_reason"):
+                exhausted = True
+                notes.append(str(stats.get("stopped_reason")))
+
+        extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
+        if extra_sources and not exhausted:
+            extra = await load_extra_stores(
+                db, api_key=api_key, economy=economy, sources=extra_sources
+            )
+            total_added += int(extra.get("components_added") or 0)
+            for name, st in (extra.get("sources") or {}).items():
+                if isinstance(st, dict) and "error" in st:
+                    notes.append(f"{name}: ошибка {st['error']}")
+                elif isinstance(st, dict):
+                    notes.append(f"{name}: +{st.get('components_added', 0)}")
     except CreditsExhaustedError as e:
         return schemas.UpdateDatabaseResponse(
-            status="credits_exhausted", message=str(e),
-            note=f"Сохранены уже загруженные товары ({existing_components} шт.). Пополните кредиты, экономный режим или импорт JSON.",
-            components_added=0, categories_ready=total_categories, economy=economy, credits_exhausted=True,
+            status="credits_exhausted",
+            message=str(e),
+            note=(
+                f"Сохранены уже загруженные товары ({existing_components} шт.). "
+                "Пополните кредиты, экономный режим или импорт JSON."
+            ),
+            components_added=total_added,
+            categories_ready=total_categories,
+            economy=economy,
+            credits_exhausted=True,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Ошибка загрузки DNS: {e}")
-    exhausted = bool(stats.get("stopped_reason"))
-    msg = f"Загружено: +{stats['components_added']}, уникальных {stats.get('unique_seen', 0)}."
-    note = f"OK запросов: {stats['queries_ok']}, ошибок: {stats['errors']}"
-    if economy:
+        raise HTTPException(status_code=502, detail=f"Ошибка загрузки: {e}")
+
+    msg = f"Загружено позиций/цен: +{total_added}."
+    note = " · ".join(notes) if notes else None
+    if economy and note:
         note += " · экономный режим"
     if exhausted:
-        note += f" · {stats.get('stopped_reason')}"
-        msg += " Прервано по лимиту — старые данные на месте."
+        msg += " Часть источников прервана по лимиту — старые данные на месте."
+
     return schemas.UpdateDatabaseResponse(
-        status="credits_exhausted" if exhausted else "ok", message=msg, note=note,
-        components_added=stats["components_added"], categories_ready=total_categories,
-        economy=economy, credits_exhausted=exhausted,
+        status="credits_exhausted" if exhausted else "ok",
+        message=msg,
+        note=note,
+        components_added=total_added,
+        categories_ready=total_categories,
+        economy=economy,
+        credits_exhausted=exhausted,
     )
 
 
