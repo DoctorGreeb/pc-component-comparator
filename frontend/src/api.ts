@@ -145,6 +145,26 @@ export async function updateDatabase(
   return res.json();
 }
 
+/** Бесплатная подгрузка без ReefAPI-ключа */
+export async function updateDatabaseFree(ymlUrl?: string): Promise<{
+  status: string;
+  message: string;
+  note?: string;
+  components_added: number;
+  categories_ready: number;
+}> {
+  const res = await fetch(`${API_BASE}/update-database-free`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ free_only: true, yml_url: ymlUrl || undefined }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка бесплатной загрузки');
+  }
+  return res.json();
+}
+
 export async function exportCatalog(): Promise<{ count: number; items: unknown[] }> {
   const res = await fetch(`${API_BASE}/catalog/export`);
   if (!res.ok) throw new Error('Не удалось экспортировать каталог');
