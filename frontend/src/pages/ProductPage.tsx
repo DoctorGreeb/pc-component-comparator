@@ -92,7 +92,7 @@ export function ProductPage() {
   const prices = useMemo(() => {
     if (!item?.prices?.length) return []
     return [...item.prices]
-      .filter((p) => p.price != null)
+      .filter((p) => p.price != null && p.in_stock)
       .sort((a, b) => (a.price ?? 0) - (b.price ?? 0))
   }, [item])
 
