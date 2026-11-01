@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
-import { updateDatabase, exportCatalog, importCatalog } from './api'
+import { updateDatabase, updateDatabaseFree, exportCatalog, importCatalog } from './api'
 import './App.css'
 
 const STORAGE_KEY = 'reefapi_key'
@@ -61,10 +61,24 @@ function App() {
     setUpdateMsg('Ключ сохранён. Можно обновить базу.')
   }
 
+  const handleFreeUpdate = async () => {
+    setUpdating(true)
+    setUpdateMsg(null)
+    try {
+      const res = await updateDatabaseFree()
+      setCreditsExhausted(false)
+      setUpdateMsg(res.message + (res.note ? ` — ${res.note}` : ''))
+    } catch (e) {
+      setUpdateMsg(e instanceof Error ? e.message : 'Ошибка бесплатной загрузки')
+    } finally {
+      setUpdating(false)
+    }
+  }
+
   const handleUpdateDb = async (forceEconomy?: boolean) => {
     const key = apiKeyInput.trim() || localStorage.getItem(STORAGE_KEY) || undefined
     if (!key) {
-      setUpdateMsg('Нет ключа: введите ReefAPI-ключ или импортируйте JSON-каталог.')
+      await handleFreeUpdate()
       return
     }
     const useEconomy = forceEconomy ?? economy
@@ -141,10 +155,9 @@ function App() {
                 <span className="help-tip" tabIndex={0}>
                   ?
                   <span className="help-tip-content">
-                    Ключ нужен для подгрузки цен DNS. Если кредиты кончились —
-                    приложение продолжит работать на уже загруженных данных.
-                    Можно экспортировать каталог в JSON и импортировать позже
-                    без API, либо включить экономный режим (меньше запросов).
+                    Ключ — для живых цен DNS/Маркет/WB. Без ключа работает кнопка
+                    «Без ключа»: открытые датасеты (характеристики + ориентир. цены).
+                    Также: экспорт/импорт JSON и экономный режим.
                   </span>
                 </span>
               </label>
@@ -169,11 +182,7 @@ function App() {
             </div>
             <div className="api-key-extra">
               <label className="economy-check">
-                <input
-                  type="checkbox"
-                  checked={economy}
-                  onChange={(e) => setEconomy(e.target.checked)}
-                />
+                <input type="checkbox" checked={economy} onChange={(e) => setEconomy(e.target.checked)} />
                 Экономный режим (мало кредитов)
               </label>
               {apiKeyApplied && <span className="api-key-status">Ключ в браузере</span>}
@@ -184,15 +193,19 @@ function App() {
             <button className="btn btn-primary" onClick={() => handleUpdateDb()} disabled={updating}>
               {updating ? 'Обновление…' : 'Обновить базу'}
             </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleFreeUpdate}
+              disabled={updating}
+              title="Открытые датасеты без API-ключа"
+            >
+              Без ключа
+            </button>
             <button type="button" className="btn btn-outline btn-sm" onClick={handleExport} disabled={updating}>
               Экспорт JSON
             </button>
-            <button
-              type="button"
-              className="btn btn-outline btn-sm"
-              onClick={() => fileRef.current?.click()}
-              disabled={updating}
-            >
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()} disabled={updating}>
               Импорт JSON
             </button>
             <input
@@ -212,18 +225,8 @@ function App() {
         {creditsExhausted && (
           <div className="credits-banner">
             <strong>Кредиты ReefAPI закончились.</strong>{' '}
-            Каталог не стёрт — сравнение работает на уже загруженных товарах.{' '}
-            <button type="button" className="linkish" onClick={() => handleUpdateDb(true)}>
-              Экономное обновление
-            </button>
-            {' · '}
-            <a href={REEF_PRICING_URL} target="_blank" rel="noopener noreferrer">
-              Пополнить
-            </a>
-            {' · '}
-            <button type="button" className="linkish" onClick={handleExport}>
-              Экспорт JSON
-            </button>
+            Каталог сохранён. Можно «Без ключа», экспорт JSON или{' '}
+            <a href={REEF_PRICING_URL} target="_blank" rel="noopener noreferrer">пополнить</a>.
           </div>
         )}
 
@@ -243,18 +246,12 @@ function App() {
             <span>
               Выбрано: {selected.length} / 4
               {selected.length > 0 && (
-                <span className="selected-names">
-                  {' '}({selected.map((s) => s.name).join(', ')})
-                </span>
+                <span className="selected-names"> ({selected.map((s) => s.name).join(', ')})</span>
               )}
             </span>
             <div className="compare-bar-actions">
-              <button className="btn btn-ghost" onClick={clearSelection}>
-                Очистить
-              </button>
-              <button className="btn btn-primary" onClick={goToCompare}>
-                Перейти к сравнению
-              </button>
+              <button className="btn btn-ghost" onClick={clearSelection}>Очистить</button>
+              <button className="btn btn-primary" onClick={goToCompare}>Перейти к сравнению</button>
             </div>
           </div>
         </div>
