@@ -67,6 +67,23 @@ export interface ComponentDetail {
 
 export type SortOption = 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc';
 
+export interface UpdateResult {
+  status: string;
+  message: string;
+  note?: string;
+  components_added: number;
+  categories_ready: number;
+  economy?: boolean;
+  credits_exhausted?: boolean;
+}
+
+export interface ProgressEvent {
+  pct: number;
+  op: string;
+  result?: UpdateResult;
+  error?: string;
+}
+
 export async function fetchCategories(): Promise<Category[]> {
   const res = await fetch(`${API_BASE}/categories`);
   if (!res.ok) throw new Error('Не удалось загрузить категории');
@@ -124,15 +141,7 @@ export async function fetchCompare(ids: number[]): Promise<{
 export async function updateDatabase(
   apiKey?: string,
   economy = false,
-): Promise<{
-  status: string;
-  message: string;
-  note?: string;
-  components_added: number;
-  categories_ready: number;
-  economy?: boolean;
-  credits_exhausted?: boolean;
-}> {
+): Promise<UpdateResult> {
   const res = await fetch(`${API_BASE}/update-database`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -146,13 +155,7 @@ export async function updateDatabase(
 }
 
 /** Бесплатная подгрузка без ReefAPI-ключа */
-export async function updateDatabaseFree(ymlUrl?: string): Promise<{
-  status: string;
-  message: string;
-  note?: string;
-  components_added: number;
-  categories_ready: number;
-}> {
+export async function updateDatabaseFree(ymlUrl?: string): Promise<UpdateResult> {
   const res = await fetch(`${API_BASE}/update-database-free`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -163,6 +166,75 @@ export async function updateDatabaseFree(ymlUrl?: string): Promise<{
     throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка бесплатной загрузки');
   }
   return res.json();
+}
+
+/**
+ * Обновление базы с live-прогрессом (SSE).
+ * onProgress вызывается на каждом шаге: { pct, op }.
+ */
+export async function updateDatabaseWithProgress(
+  options: {
+    apiKey?: string;
+    economy?: boolean;
+    freeOnly?: boolean;
+    ymlUrl?: string;
+  },
+  onProgress: (ev: ProgressEvent) => void,
+): Promise<UpdateResult> {
+  const res = await fetch(`${API_BASE}/update-database-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({
+      api_key: options.apiKey || undefined,
+      economy: !!options.economy,
+      free_only: !!options.freeOnly,
+      yml_url: options.ymlUrl || undefined,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка обновления');
+  }
+  if (!res.body) {
+    throw new Error('Нет тела ответа (stream)');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: UpdateResult | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() || '';
+    for (const chunk of chunks) {
+      const line = chunk
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('data:'));
+      if (!line) continue;
+      try {
+        const data = JSON.parse(line.slice(5).trim()) as ProgressEvent;
+        onProgress(data);
+        if (data.result) finalResult = data.result;
+        if (data.error && !data.result) {
+          throw new Error(data.error);
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
+      }
+    }
+  }
+
+  if (!finalResult) {
+    throw new Error('Обновление завершилось без результата');
+  }
+  return finalResult;
 }
 
 export async function exportCatalog(): Promise<{ count: number; items: unknown[] }> {
