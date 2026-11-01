@@ -1,22 +1,28 @@
 """
-Поиск картинок без API-ключа:
-1) Wikimedia Commons (MediaWiki API)
-2) Openverse (Creative Commons / openverse.org)
+Поиск картинок:
+1) Google Custom Search (Images) — если заданы API key + CX (официальный API)
+2) DuckDuckGo Images — первая превьюшка без ключа
+3) Wikimedia Commons
+4) Openverse
 
-Поддерживает лимит времени на один товар (timeout_sec).
+Прямой парсинг google.com/imghp не используем (ToS Google + CAPTCHA).
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 
 HEADERS = {
-    "User-Agent": "PCComparator/0.4.5 (https://github.com/DoctorGreeb/pc-component-comparator; contact via github)",
-    "Accept": "application/json",
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; PCComparator/0.4.6; "
+        "+https://github.com/DoctorGreeb/pc-component-comparator)"
+    ),
+    "Accept": "application/json, text/html, */*",
 }
 
 _CACHE: dict[str, str | None] = {}
@@ -111,6 +117,104 @@ def _clean_query(name: str) -> str:
     return s
 
 
+def _google_creds(
+    api_key: str | None = None, cx: str | None = None
+) -> tuple[str | None, str | None]:
+    key = (api_key or os.getenv("GOOGLE_CSE_KEY") or "").strip() or None
+    eng = (cx or os.getenv("GOOGLE_CSE_CX") or "").strip() or None
+    return key, eng
+
+
+async def search_google_cse(
+    client: httpx.AsyncClient,
+    query: str,
+    *,
+    api_key: str | None = None,
+    cx: str | None = None,
+) -> str | None:
+    """Google Programmable Search — searchType=image, берём первый link."""
+    key, eng = _google_creds(api_key, cx)
+    if not key or not eng:
+        return None
+    params = {
+        "key": key,
+        "cx": eng,
+        "q": query,
+        "searchType": "image",
+        "num": 3,
+        "safe": "active",
+        "imgSize": "medium",
+        "imgType": "photo",
+    }
+    try:
+        resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        for item in data.get("items") or []:
+            # link — оригинал, image.thumbnailLink — превью
+            link = item.get("link")
+            thumb = (item.get("image") or {}).get("thumbnailLink")
+            for candidate in (thumb, link):
+                if candidate and str(candidate).startswith("http"):
+                    return str(candidate)
+    except Exception:
+        return None
+    return None
+
+
+async def search_duckduckgo_images(client: httpx.AsyncClient, query: str) -> str | None:
+    """
+    Первая превьюшка из выдачи DuckDuckGo Images (без API-ключа).
+    Близкий UX к «первой картинке из поиска».
+    """
+    try:
+        # 1) страница поиска — вытаскиваем vqd
+        r = await client.get(
+            "https://duckduckgo.com/",
+            params={"q": query},
+            headers={**HEADERS, "Accept": "text/html"},
+        )
+        if r.status_code != 200:
+            return None
+        html = r.text
+        m = re.search(r"vqd=([\d-]+)", html)
+        if not m:
+            m = re.search(r"vqd=\"([\d-]+)\"", html)
+        if not m:
+            m = re.search(r"vqd':\s*'([\d-]+)'", html)
+        if not m:
+            return None
+        vqd = m.group(1)
+
+        # 2) JSON-лента картинок
+        r2 = await client.get(
+            "https://duckduckgo.com/i.js",
+            params={
+                "l": "ru-ru",
+                "o": "json",
+                "q": query,
+                "vqd": vqd,
+                "f": ",,,",
+                "p": "1",
+            },
+            headers={**HEADERS, "Accept": "application/json", "Referer": "https://duckduckgo.com/"},
+        )
+        if r2.status_code != 200:
+            return None
+        data = r2.json()
+        results = data.get("results") or []
+        for item in results:
+            # thumbnail — превью, image — полное
+            for key in ("thumbnail", "image"):
+                url = item.get(key)
+                if url and str(url).startswith("http"):
+                    return str(url)
+    except Exception:
+        return None
+    return None
+
+
 async def search_wikimedia(client: httpx.AsyncClient, query: str) -> str | None:
     params = {
         "action": "query",
@@ -172,15 +276,17 @@ async def find_image_url(
     category: str | None = None,
     client: httpx.AsyncClient | None = None,
     timeout_sec: float = 15.0,
+    google_api_key: str | None = None,
+    google_cx: str | None = None,
 ) -> tuple[str | None, ImageStatus, str | None]:
     """
     Ищем картинку. Возвращает (url, status, host).
-    status: ok | timeout | not_found | error
+    Порядок: Google CSE → DuckDuckGo (первая превью) → Wikimedia → Openverse.
     """
     q = _clean_query(name)
     if not q:
         return None, "not_found", None
-    cache_key = f"{category or ''}|{q.lower()}"
+    cache_key = f"{category or ''}|{q.lower()}|{bool(google_api_key)}"
     if cache_key in _CACHE:
         cached = _CACHE[cache_key]
         if cached:
@@ -193,35 +299,58 @@ async def find_image_url(
     own_client = client is None
     if own_client:
         client = httpx.AsyncClient(
-            timeout=min(timeout_sec, 20.0),
+            timeout=min(timeout_sec, 25.0),
             headers=HEADERS,
             follow_redirects=True,
         )
 
     assert client is not None
 
-    async def _search() -> str | None:
+    cat_hint = {
+        "cpu": "processor CPU",
+        "gpu": "graphics card GPU",
+        "ram": "DDR memory RAM",
+        "motherboard": "motherboard",
+        "ssd": "SSD NVMe",
+        "hdd": "hard disk drive",
+        "psu": "power supply PSU",
+        "case": "PC case chassis",
+        "cooler": "CPU cooler",
+    }.get(category or "", "PC hardware")
+    q_full = f"{q} {cat_hint}"
+
+    async def _search() -> tuple[str | None, str | None]:
+        # 1) Google Custom Search Images (если ключ)
+        url = await search_google_cse(
+            client, q_full, api_key=google_api_key, cx=google_cx
+        )
+        if url:
+            return url, "google"
+
+        # 2) DuckDuckGo — первая превьюшка без ключа
+        url = await search_duckduckgo_images(client, q_full)
+        if url:
+            return url, "duckduckgo"
+        url = await search_duckduckgo_images(client, q)
+        if url:
+            return url, "duckduckgo"
+
+        # 3) Wikimedia
         url = await search_wikimedia(client, q)
         if url:
-            return url
-        cat_hint = {
-            "cpu": "processor CPU",
-            "gpu": "graphics card GPU",
-            "ram": "DDR memory RAM",
-            "motherboard": "motherboard",
-            "ssd": "SSD NVMe",
-            "hdd": "hard disk drive",
-            "psu": "power supply PSU",
-            "case": "PC case chassis",
-            "cooler": "CPU cooler",
-        }.get(category or "", "PC hardware")
-        url = await search_openverse(client, f"{q} {cat_hint}")
+            return url, "wikimedia"
+
+        # 4) Openverse
+        url = await search_openverse(client, q_full)
         if url:
-            return url
-        return await search_openverse(client, q)
+            return url, "openverse"
+        url = await search_openverse(client, q)
+        if url:
+            return url, "openverse"
+        return None, None
 
     try:
-        url = await asyncio.wait_for(_search(), timeout=timeout_sec)
+        url, source = await asyncio.wait_for(_search(), timeout=timeout_sec)
     except asyncio.TimeoutError:
         if own_client:
             await client.aclose()
@@ -241,7 +370,10 @@ async def find_image_url(
     if url:
         from urllib.parse import urlparse
 
-        return url, "ok", urlparse(url).netloc or "web"
+        host = urlparse(url).netloc or source or "web"
+        if source:
+            host = f"{source}/{host}"
+        return url, "ok", host
     return None, "not_found", None
 
 
@@ -251,9 +383,16 @@ async def find_image_or_placeholder(
     category: str | None = None,
     client: httpx.AsyncClient | None = None,
     timeout_sec: float = 15.0,
+    google_api_key: str | None = None,
+    google_cx: str | None = None,
 ) -> str:
     url, _status, _host = await find_image_url(
-        name, category=category, client=client, timeout_sec=timeout_sec
+        name,
+        category=category,
+        client=client,
+        timeout_sec=timeout_sec,
+        google_api_key=google_api_key,
+        google_cx=google_cx,
     )
     if url:
         return url
