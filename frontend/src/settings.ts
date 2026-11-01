@@ -18,14 +18,14 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
-  imageTimeoutSec: 15,
-  maxWebImages: 100,
+  imageTimeoutSec: 8,
+  maxWebImages: 80,
   webImages: true,
   pageSize: 48,
   compactCards: false,
   showOrientirPrices: true,
   autoRefreshOnOpen: false,
-  timeoutMessageHoldSec: 2,
+  timeoutMessageHoldSec: 1,
   googleCseKey: '',
   googleCseCx: '',
 }
@@ -40,10 +40,10 @@ export function loadSettings(): AppSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
-      imageTimeoutSec: clamp(Number(parsed.imageTimeoutSec ?? 15), 1, 99),
-      maxWebImages: clamp(Number(parsed.maxWebImages ?? 100), 0, 500),
+      imageTimeoutSec: clamp(Number(parsed.imageTimeoutSec ?? 8), 1, 99),
+      maxWebImages: clamp(Number(parsed.maxWebImages ?? 80), 0, 500),
       pageSize: clamp(Number(parsed.pageSize ?? 48), 12, 120),
-      timeoutMessageHoldSec: clamp(Number(parsed.timeoutMessageHoldSec ?? 2), 0, 5),
+      timeoutMessageHoldSec: clamp(Number(parsed.timeoutMessageHoldSec ?? 1), 0, 5),
       googleCseKey: String(parsed.googleCseKey ?? ''),
       googleCseCx: String(parsed.googleCseCx ?? ''),
     }
@@ -71,6 +71,7 @@ export function applyTheme(theme: ThemeMode): void {
     resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   }
   root.setAttribute('data-theme', resolved)
+  document.body?.setAttribute('data-theme', resolved)
 }
 
 export function settingsToApiPayload(s: AppSettings) {
