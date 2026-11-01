@@ -94,45 +94,50 @@ async def fetch_ddg_abstract(name: str) -> dict[str, Any] | None:
 
 async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
+    # DuckDuckGo markup changes often; locate result anchors independently of attribute order.
     try:
         response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
         if response.status_code == 200:
             html = response.text
-            # Parse each result container so title, URL and snippet stay associated.
-            blocks = re.findall(r'(?is)<div[^>]+class="[^"]*result[^"]*results_links[^"]*"[^>]*>.*?</div>\s*</div>', html)
-            if not blocks:
-                blocks = re.findall(r'(?is)<div[^>]+class="[^"]*result[^"]*"[^>]*>.*?(?=<div[^>]+class="[^"]*result[^"]*"|</body>)', html)
-            for block in blocks:
-                anchor = re.search(r'(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
-                if not anchor:
+            for match in re.finditer(r'(?is)<a\\b(?=[^>]*class=["'][^"']*result__a)([^>]*)>(.*?)</a>', html):
+                attrs = match.group(1)
+                href_match = re.search(r'''(?is)href=["']([^"']+)["']''', attrs)
+                if not href_match:
                     continue
-                href = unescape(anchor.group(1))
+                href = unescape(href_match.group(1))
                 redirect = re.search(r"[?&]uddg=([^&]+)", href)
                 if redirect:
                     href = unquote(redirect.group(1))
-                title = _plain_html(anchor.group(2))
-                snippet_match = re.search(r'(?is)class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|td|div)', block)
-                snippet = _plain_html(snippet_match.group(1)) if snippet_match else _plain_html(block)
-                if href.startswith("http"):
-                    results.append({"title": title, "snippet": snippet[:1000], "url": href})
+                if href.startswith("//"):
+                    href = "https:" + href
+                if not href.startswith("http"):
+                    continue
+                # Search-result snippet is normally adjacent to its title anchor.
+                vicinity = html[max(0, match.start() - 500):min(len(html), match.end() + 1800)]
+                snippet_match = re.search(r'(?is)class=["'][^"']*result__snippet[^"']*["'][^>]*>(.*?)</(?:a|td|div)', vicinity)
+                results.append({
+                    "title": _plain_html(match.group(2)),
+                    "snippet": _plain_html(snippet_match.group(1))[:1000] if snippet_match else "",
+                    "url": href,
+                })
     except Exception:
         pass
 
-    # Bing is a second independent search source, not an API-key service.
     try:
         response = await client.get("https://www.bing.com/search", params={"q": query})
         if response.status_code == 200:
-            for block in re.findall(r'(?is)<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?</li>', response.text):
-                match = re.search(r'(?is)<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
+            for block in re.findall(r'(?is)<li[^>]+class=["'][^"']*b_algo[^"']*["'][^>]*>.*?</li>', response.text):
+                match = re.search(r'(?is)<h2[^>]*>\\s*<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)</a>', block)
                 if match:
                     snippet_match = re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
-                    results.append({"title": _plain_html(match.group(2)),
-                                    "snippet": _plain_html(snippet_match.group(1)) if snippet_match else "",
-                                    "url": unescape(match.group(1))})
+                    results.append({
+                        "title": _plain_html(match.group(2)),
+                        "snippet": _plain_html(snippet_match.group(1)) if snippet_match else "",
+                        "url": unescape(match.group(1)),
+                    })
     except Exception:
         pass
     return results
-
 
 def _model_codes(*values: str | None) -> set[str]:
     text = " ".join(v or "" for v in values).upper()
@@ -216,16 +221,14 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
         return None
     queries = list(dict.fromkeys([
         f'"{model or name}" характеристики',
-        f'"{model or name}" характеристики купить',
         f'{query} характеристики',
-        f'{query} specifications',
         f'site:ozon.ru/product {model or name} характеристики',
         f'site:dns-shop.ru {model or name} характеристики',
     ]))
     headers = {"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
     seen: set[str] = set()
     candidates: list[dict[str, str]] = []
-    async with httpx.AsyncClient(timeout=httpx.Timeout(18, connect=8), headers=headers, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5), headers=headers, follow_redirects=True) as client:
         for search_query in queries:
             for result in await _search_results(client, search_query):
                 url = result["url"]
