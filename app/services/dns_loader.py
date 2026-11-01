@@ -6,7 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 import httpx
 from sqlalchemy.orm import Session
@@ -72,6 +72,8 @@ ECONOMY_QUERIES: dict[str, list[str]] = {
 
 class CreditsExhaustedError(Exception):
     pass
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 def get_api_key(override: str | None = None) -> str | None:
@@ -273,6 +275,7 @@ async def load_dns_catalog(
     pages_per_query: int = 2,
     api_key: str | None = None,
     economy: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     key = get_api_key(api_key)
     if not key:
@@ -333,15 +336,23 @@ async def load_dns_catalog(
         batch_size = 6
         for i in range(0, len(jobs_slice), batch_size):
             batch = jobs_slice[i : i + batch_size]
+            if on_progress:
+                for cat_name, query, page in batch:
+                    await on_progress(f"DNS · POST {REEF_API_BASE}/dns-shop/v1/search · category={cat_name} · query=\"{query}\" · page={page}")
             try:
                 outcomes = await asyncio.gather(*[fetch_one(c, q, p) for c, q, p in batch])
             except CreditsExhaustedError as e:
                 stopped_reason = str(e)
                 break
-            except Exception:
+            except Exception as exc:
                 errors += len(batch)
+                if on_progress:
+                    await on_progress(f"DNS · batch error · {type(exc).__name__}: {exc}")
                 continue
 
+            fetched_count = sum(len(results) for _, results in outcomes)
+            if on_progress:
+                await on_progress(f"DNS · batch {i // batch_size + 1} · HTTP responses received · {fetched_count} products · {len(batch)} requests")
             for cat_name, results in outcomes:
                 if not results:
                     errors += 1
