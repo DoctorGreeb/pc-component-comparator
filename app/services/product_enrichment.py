@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from html import unescape
@@ -188,7 +189,10 @@ def _extract_spec_rows(page: str) -> dict[str, str]:
             specs.setdefault(k, v)
 
     # Product pages frequently store characteristics in JSON-LD / hydration JSON.
-    for raw in re.findall(r'(?is)<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page):
+    scripts = re.findall(r'(?is)<script[^>]*>(.*?)</script>', page)
+    for raw in scripts:
+        if len(raw) > 3_000_000 or not raw.strip().startswith(("{", "[")):
+            continue
         try:
             data = json.loads(raw)
         except Exception:
@@ -202,10 +206,14 @@ def _extract_spec_rows(page: str) -> dict[str, str]:
                     props = [props]
                 for prop in props if isinstance(props, list) else []:
                     if isinstance(prop, dict):
-                        key = prop.get("name") or prop.get("propertyID")
+                        key = prop.get("name") or prop.get("propertyID") or prop.get("key")
                         value = prop.get("value") or prop.get("valueReference")
-                        if key and value:
+                        if key and value and not isinstance(value, (dict, list)):
                             specs[str(key)[:100]] = str(value)[:300]
+                key = node.get("name") or node.get("key") or node.get("title")
+                value = node.get("value") or node.get("displayValue")
+                if key and value and not isinstance(value, (dict, list)):
+                    specs[str(key)[:100]] = str(value)[:300]
                 stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
             elif isinstance(node, list):
                 stack.extend(node)
@@ -242,17 +250,26 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
                 break
 
         # Then open every matching page; do not stop after the first blocked store.
-        for result in candidates[:18]:
-            try:
-                response = await client.get(result["url"])
-                if response.status_code != 200 or "html" not in response.headers.get("content-type", "").lower():
-                    continue
-                specs = _extract_spec_rows(response.text)
-                if len(specs) >= 3:
-                    return {"specs": specs, "source": "web_page",
-                            "source_title": result["title"], "source_url": str(response.url)}
-            except Exception:
-                continue
+        semaphore = asyncio.Semaphore(6)
+
+        async def inspect_candidate(result: dict[str, str]):
+            async with semaphore:
+                try:
+                    response = await client.get(result["url"])
+                    if response.status_code != 200 or "html" not in response.headers.get("content-type", "").lower():
+                        return None
+                    specs = _extract_spec_rows(response.text)
+                    if len(specs) >= 3:
+                        return {"specs": specs, "source": "web_page",
+                                "source_title": result["title"], "source_url": str(response.url)}
+                except Exception:
+                    return None
+            return None
+
+        page_results = await asyncio.gather(*(inspect_candidate(item) for item in candidates[:18]))
+        for result in page_results:
+            if result:
+                return result
     return None
 
 
