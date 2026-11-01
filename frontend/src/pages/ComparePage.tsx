@@ -21,7 +21,8 @@ function getProductUrl(c: ComponentDetail): string | null {
 }
 
 function specVal(c: ComponentDetail, key: string): string {
-  const specs = c.specs && typeof c.specs === 'object' ? (c.specs as Record<string, unknown>) : {}
+  const specs =
+    c.specs && typeof c.specs === 'object' ? (c.specs as Record<string, unknown>) : {}
   const v = specs[key]
   return v != null && v !== '' ? String(v) : '—'
 }
@@ -65,7 +66,6 @@ export function ComparePage() {
       const values = data.components.map((c) => specVal(c, key))
       if (new Set(values).size > 1) set.add(key)
     }
-    // цена всегда «различающаяся» строка для подсветки если цены разные
     return set
   }, [data])
 
@@ -91,6 +91,7 @@ export function ComparePage() {
 
   const prices = components.map(getMinPrice)
   const priceDiff = new Set(prices.map((p) => p ?? -1)).size > 1
+  const hasDescription = components.some((c) => c.description)
 
   return (
     <div className="compare">
@@ -99,9 +100,7 @@ export function ComparePage() {
           <Link to="/" className="back-link">
             ← Каталог
           </Link>
-          <h1>
-            Сравнение: {data.category_ru || data.category || 'компоненты'}
-          </h1>
+          <h1>Сравнение: {data.category_ru || data.category || 'компоненты'}</h1>
           <p className="compare-sub">
             {components.length} позиций · характеристики из DNS
           </p>
@@ -161,11 +160,19 @@ export function ComparePage() {
               })}
             </tr>
 
-            {c.descriptionRow(components)}
+            {hasDescription && (
+              <tr>
+                <td className="label-col sticky-col">Кратко</td>
+                {components.map((c) => (
+                  <td key={c.id} className="desc-cell">
+                    {c.description || '—'}
+                  </td>
+                ))}
+              </tr>
+            )}
 
             {keys.map((key) => {
               const isDiff = diffKeys.has(key)
-              if (onlyDiff && !isDiff) return null
               return (
                 <tr key={key} className={isDiff ? 'row-diff' : ''}>
                   <td className="label-col sticky-col">{key}</td>
@@ -190,21 +197,4 @@ export function ComparePage() {
       </div>
     </div>
   )
-}
-
-function c = {
-  descriptionRow(components: ComponentDetail[]) {
-    const has = components.some((x) => x.description)
-    if (!has) return null
-    return (
-      <tr>
-        <td className="label-col sticky-col">Кратко</td>
-        {components.map((c) => (
-          <td key={c.id} className="desc-cell">
-            {c.description || '—'}
-          </td>
-        ))}
-      </tr>
-    )
-  },
 }
