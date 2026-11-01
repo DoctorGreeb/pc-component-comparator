@@ -13,6 +13,7 @@ import {
   DEFAULT_SETTINGS,
 } from './settings'
 import './App.css'
+import './redesign.css'
 
 const STORAGE_KEY = 'reefapi_key'
 const REEF_SIGNUP_URL = 'https://reefapi.com/signup'
@@ -95,7 +96,7 @@ function App() {
     const next: AppSettings = {
       ...draft,
       imageTimeoutSec: Math.max(1, Math.min(99, Number(draft.imageTimeoutSec) || 15)),
-      maxWebImages: Math.max(0, Math.min(500, Number(draft.maxWebImages) || 100)),
+      maxWebImages: Math.max(0, Math.min(500, Number.isFinite(Number(draft.maxWebImages)) ? Number(draft.maxWebImages) : 100)),
       pageSize: Math.max(12, Math.min(120, Number(draft.pageSize) || 48)),
     }
     setSettings(next)
