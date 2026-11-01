@@ -399,13 +399,25 @@ SPEC_BUILDERS = {
 }
 
 
-async def enrich_missing_media(db: Session, *, web_images: bool = True, max_web: int = 80) -> dict[str, int]:
+async def enrich_missing_media(
+    db: Session, *, web_images: bool = True, max_web: int = 80, on_progress=None
+) -> dict[str, int]:
     """
     1) Доноры в той же категории (free ↔ API): картинки и спеки.
     2) Без картинки — Wikimedia / Openverse.
     3) Иначе SVG-заглушка (ни один товар без image_url).
     """
     from app.services.image_enrichment import find_image_url, placeholder_data_uri
+
+    async def _prog(msg: str, pct: float | None = None):
+        if on_progress is None:
+            return
+        try:
+            r = on_progress(msg, pct)
+            if hasattr(r, "__await__"):
+                await r
+        except Exception:
+            pass
 
     components = db.query(models.Component).all()
     cats = {c.id: c.name for c in db.query(models.Category).all()}
@@ -417,6 +429,7 @@ async def enrich_missing_media(db: Session, *, web_images: bool = True, max_web:
     specs_filled = 0
     web_filled = 0
     placeholder_filled = 0
+    await _prog("Сверка доноров: копирование спеков и картинок между похожими товарами…")
 
     for cat_id, group in by_cat.items():
         donors_img = [c for c in group if c.image_url and not str(c.image_url).startswith("data:")]
@@ -463,6 +476,7 @@ async def enrich_missing_media(db: Session, *, web_images: bool = True, max_web:
 
     if web_images:
         need = [c for c in db.query(models.Component).all() if not c.image_url][:max_web]
+        await _prog(f"Поиск картинок в интернете: {len(need)} товаров без фото…")
         async with httpx.AsyncClient(
             timeout=25.0,
             headers={
@@ -471,18 +485,25 @@ async def enrich_missing_media(db: Session, *, web_images: bool = True, max_web:
             },
             follow_redirects=True,
         ) as client:
-            for c in need:
+            for i, c in enumerate(need, 1):
                 cat_name = cats.get(c.category_id)
+                short = (c.name or "")[:70]
+                await _prog(f"[{i}/{len(need)}] Ищем картинку: {short}")
                 try:
                     url = await find_image_url(c.name or "", category=cat_name, client=client)
                 except Exception:
                     url = None
                 if url:
+                    host = urlparse(url).netloc or "web"
                     c.image_url = url
                     web_filled += 1
+                    await _prog(f"[{i}/{len(need)}] Картинка: {short} ← {host}")
                 else:
                     c.image_url = placeholder_data_uri(cat_name)
                     placeholder_filled += 1
+                    await _prog(f"[{i}/{len(need)}] Заглушка SVG: {short}")
+                if i % 10 == 0:
+                    db.commit()
         db.commit()
 
     left = (
