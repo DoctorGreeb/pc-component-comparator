@@ -11,10 +11,10 @@ from app.database import engine, get_db, Base
 from app import models, schemas
 from app.services.dns_loader import load_dns_catalog, get_api_key, CreditsExhaustedError
 from app.services.multi_store_loader import load_extra_stores
-from app.services.free_loader import load_free_sources
+from app.services.free_loader import load_free_sources, enrich_missing_media
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="PC Component Comparator", version="0.4.1")
+app = FastAPI(title="PC Component Comparator", version="0.4.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 DEFAULT_CATEGORIES = [
@@ -80,7 +80,7 @@ def _component_to_list_item(c):
         min_price=min_p, old_price=old_p, product_url=product_url, specs=_parse_specs(c.specs))
 
 @app.get("/")
-def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.1"}
+def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.3"}
 @app.get("/health")
 def health(): return {"status": "ok"}
 
@@ -139,6 +139,18 @@ async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(N
             categories_ready=total_categories, economy=economy, credits_exhausted=True)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ошибка загрузки: {e}")
+
+    # доноры free↔api + web-картинки для товаров без фото
+    try:
+        enrich = await enrich_missing_media(db, web_images=True, max_web=60)
+        notes.append(
+            f"enrich: img {enrich.get('images_filled', 0)} / "
+            f"specs {enrich.get('specs_filled', 0)} / "
+            f"web {enrich.get('web_filled', 0)}"
+        )
+    except Exception as e:
+        notes.append(f"enrich: {e}")
+
     return schemas.UpdateDatabaseResponse(status="credits_exhausted" if exhausted else "ok",
         message=f"Загружено: +{total_added}.", note=" · ".join(notes) if notes else None,
         components_added=total_added, categories_ready=total_categories, economy=economy, credits_exhausted=exhausted)
@@ -305,15 +317,21 @@ def import_catalog(body: schemas.CatalogImportRequest, db: Session = Depends(get
         specs_json = json.dumps(item.specs, ensure_ascii=False) if item.specs else None
         if existing_price:
             comp = existing_price.component
-            comp.name, comp.brand, comp.description = item.name, item.brand, item.description
-            comp.image_url = item.image_url or comp.image_url
+            comp.name = item.name
+            if item.brand: comp.brand = item.brand
+            if item.image_url: comp.image_url = item.image_url
+            if item.description: comp.description = item.description
             if specs_json: comp.specs = specs_json
             if item.price is not None: existing_price.price = float(item.price)
-            if item.old_price is not None: existing_price.old_price = float(item.old_price)
-            existing_price.product_url = item.product_url; updated += 1; continue
-        comp = models.Component(category_id=cat.id, name=item.name, brand=item.brand, description=item.description, image_url=item.image_url, specs=specs_json)
-        db.add(comp); db.flush()
-        db.add(models.Price(component_id=comp.id, store_id=store.id, price=float(item.price) if item.price is not None else None, old_price=float(item.old_price) if item.old_price is not None else None, in_stock=True, product_url=item.product_url, external_id=str(external_id)))
-        added += 1
+            existing_price.old_price = item.old_price
+            existing_price.product_url = item.product_url or existing_price.product_url
+            updated += 1
+        else:
+            comp = models.Component(category_id=cat.id, name=item.name, brand=item.brand, description=item.description,
+                image_url=item.image_url, specs=specs_json)
+            db.add(comp); db.flush()
+            db.add(models.Price(component_id=comp.id, store_id=store.id, price=float(item.price) if item.price is not None else None,
+                old_price=item.old_price, in_stock=True, product_url=item.product_url, external_id=str(external_id)))
+            added += 1
     db.commit()
-    return {"status": "ok", "added": added, "updated": updated, "message": f"Импорт: +{added}, обновлено {updated}"}
+    return {"status": "ok", "added": added, "updated": updated}
