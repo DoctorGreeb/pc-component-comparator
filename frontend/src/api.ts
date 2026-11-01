@@ -1,148 +1,52 @@
 const API_BASE = '/api';
 
-export interface Category {
-  id: number;
-  name: string;
-  name_ru: string;
-}
-
+export interface Category { id: number; name: string; name_ru: string; }
 export interface ComponentListItem {
-  id: number;
-  name: string;
-  brand: string | null;
-  model: string | null;
-  image_url: string | null;
-  category_id: number;
-  category_name: string | null;
-  description: string | null;
-  min_price: number | null;
-  old_price: number | null;
-  product_url: string | null;
-  specs: Record<string, string> | null;
+  id: number; name: string; brand: string | null; model: string | null; image_url: string | null;
+  category_id: number; category_name: string | null; description: string | null;
+  min_price: number | null; old_price: number | null; product_url: string | null; specs: Record<string, string> | null;
 }
-
-export interface ComponentsPage {
-  items: ComponentListItem[];
-  total: number;
-  skip: number;
-  limit: number;
-}
-
-export interface FacetValue {
-  value: string;
-  count: number;
-}
-
-export interface Facet {
-  key: string;
-  values: FacetValue[];
-}
-
-export interface FacetsResponse {
-  brands: FacetValue[];
-  specs: Facet[];
-  price_min: number | null;
-  price_max: number | null;
-}
-
+export interface ComponentsPage { items: ComponentListItem[]; total: number; skip: number; limit: number; }
+export interface FacetValue { value: string; count: number; }
+export interface Facet { key: string; values: FacetValue[]; }
+export interface FacetsResponse { brands: FacetValue[]; specs: Facet[]; price_min: number | null; price_max: number | null; }
 export interface ComponentDetail {
-  id: number;
-  name: string;
-  brand: string | null;
-  model: string | null;
-  description: string | null;
-  image_url: string | null;
-  specs: Record<string, unknown> | string | null;
-  category_id: number;
-  category?: Category;
-  prices: Array<{
-    id: number;
-    price: number | null;
-    old_price: number | null;
-    in_stock: boolean;
-    product_url: string | null;
-    store?: { id: number; name: string; url: string | null };
-  }>;
+  id: number; name: string; brand: string | null; model: string | null; description: string | null;
+  image_url: string | null; specs: Record<string, unknown> | string | null; category_id: number; category?: Category;
+  prices: Array<{ id: number; price: number | null; old_price: number | null; in_stock: boolean;
+    product_url: string | null; store?: { id: number; name: string; url: string | null } }>;
 }
-
 export type SortOption = 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc';
-
 export interface UpdateResult {
-  status: string;
-  message: string;
-  note?: string;
-  components_added: number;
-  categories_ready?: number;
-  economy?: boolean;
-  credits_exhausted?: boolean;
-  added?: number;
-  updated?: number;
+  status: string; message: string; note?: string; components_added: number; categories_ready?: number;
+  economy?: boolean; credits_exhausted?: boolean; added?: number; updated?: number;
 }
-
-export interface ProgressEvent {
-  pct: number;
-  op: string;
-  result?: UpdateResult;
-  error?: string;
-  log?: string;
-}
-
-export interface ProductReviewSnippet {
-  title: string;
-  snippet: string;
-  url: string;
-  query?: string;
-}
-
+export interface ProgressEvent { pct: number; op: string; result?: UpdateResult; error?: string; log?: string; }
+export interface ProductReviewSnippet { title: string; snippet: string; url: string; query?: string; }
 export interface ProductEnrichment {
-  description: string | null;
-  description_source: string | null;
-  description_url: string | null;
-  manufacturer_home: string | null;
-  manufacturer_model_url: string | null;
-  web_search_url: string | null;
-  reviews: ProductReviewSnippet[];
-  reviews_note: string;
+  description: string | null; description_source: string | null; description_url: string | null;
+  manufacturer_home: string | null; manufacturer_model_url: string | null; web_search_url: string | null;
+  reviews: ProductReviewSnippet[]; reviews_note: string;
 }
-
 export interface FindSpecsResult {
-  status: 'ok' | 'not_found' | 'already_filled';
-  message: string;
-  specs: Record<string, unknown>;
-  source?: string;
-  source_title?: string | null;
-  source_url?: string | null;
+  status: 'ok' | 'not_found' | 'already_filled'; message: string; specs: Record<string, unknown>;
+  source?: string; source_title?: string | null; source_url?: string | null;
 }
 
-export async function findComponentSpecs(id: number, apiKey?: string): Promise<FindSpecsResult> {
-  const res = await fetch(`${API_BASE}/components/${id}/find-specs`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey || undefined }),
-  });
+export async function findComponentSpecs(id: number): Promise<FindSpecsResult> {
+  const res = await fetch(`${API_BASE}/components/${id}/find-specs`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось найти характеристики');
-  }
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось найти характеристики');
   return data as FindSpecsResult;
 }
-
 export async function fetchCategories(): Promise<Category[]> {
   const res = await fetch(`${API_BASE}/categories`);
   if (!res.ok) throw new Error('Не удалось загрузить категории');
   return res.json();
 }
-
 export async function fetchComponents(params: {
-  category?: string;
-  q?: string;
-  sort?: SortOption;
-  brand?: string;
-  price_min?: number;
-  price_max?: number;
-  spec?: string[];
-  skip?: number;
-  limit?: number;
+  category?: string; q?: string; sort?: SortOption; brand?: string; price_min?: number; price_max?: number;
+  spec?: string[]; skip?: number; limit?: number;
 }): Promise<ComponentsPage> {
   const search = new URLSearchParams();
   if (params.category) search.set('category', params.category);
@@ -158,7 +62,6 @@ export async function fetchComponents(params: {
   if (!res.ok) throw new Error('Не удалось загрузить компоненты');
   return res.json();
 }
-
 export async function fetchFacets(category?: string): Promise<FacetsResponse> {
   const search = new URLSearchParams();
   if (category) search.set('category', category);
@@ -166,7 +69,6 @@ export async function fetchFacets(category?: string): Promise<FacetsResponse> {
   if (!res.ok) throw new Error('Не удалось загрузить фильтры');
   return res.json();
 }
-
 export async function fetchComponent(id: number): Promise<ComponentDetail> {
   const res = await fetch(`${API_BASE}/components/${id}`);
   if (!res.ok) {
@@ -175,7 +77,6 @@ export async function fetchComponent(id: number): Promise<ComponentDetail> {
   }
   return res.json();
 }
-
 export async function fetchProductEnrichment(id: number): Promise<ProductEnrichment> {
   const res = await fetch(`${API_BASE}/components/${id}/enrich`);
   if (!res.ok) {
@@ -184,12 +85,8 @@ export async function fetchProductEnrichment(id: number): Promise<ProductEnrichm
   }
   return res.json();
 }
-
 export async function fetchCompare(ids: number[]): Promise<{
-  category: string | null;
-  category_ru: string | null;
-  spec_keys: string[];
-  components: ComponentDetail[];
+  category: string | null; category_ru: string | null; spec_keys: string[]; components: ComponentDetail[];
 }> {
   const res = await fetch(`${API_BASE}/compare?ids=${ids.join(',')}`);
   if (!res.ok) {
@@ -198,28 +95,20 @@ export async function fetchCompare(ids: number[]): Promise<{
   }
   return res.json();
 }
-
-async function readSseStream(
-  res: Response,
-  onProgress: (ev: ProgressEvent) => void,
-): Promise<UpdateResult> {
+async function readSseStream(res: Response, onProgress: (ev: ProgressEvent) => void): Promise<UpdateResult> {
   if (!res.body) throw new Error('Нет тела ответа (stream)');
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let finalResult: UpdateResult | null = null;
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\\n\\n');
+    const chunks = buffer.split('\n\n');
     buffer = chunks.pop() || '';
     for (const chunk of chunks) {
-      const line = chunk
-        .split('\\n')
-        .map((l) => l.trim())
-        .find((l) => l.startsWith('data:'));
+      const line = chunk.split('\n').map((l) => l.trim()).find((l) => l.startsWith('data:'));
       if (!line) continue;
       try {
         const data = JSON.parse(line.slice(5).trim()) as ProgressEvent;
@@ -232,38 +121,20 @@ async function readSseStream(
       }
     }
   }
-
   if (!finalResult) throw new Error('Операция завершилась без результата');
   return finalResult;
 }
-
-export async function updateDatabaseWithProgress(
-  options: {
-    apiKey?: string;
-    economy?: boolean;
-    freeOnly?: boolean;
-    ymlUrl?: string;
-    imageTimeoutSec?: number;
-    maxWebImages?: number;
-    webImages?: boolean;
-    googleApiKey?: string;
-    googleCx?: string;
-  },
-  onProgress: (ev: ProgressEvent) => void,
-): Promise<UpdateResult> {
+export async function updateDatabaseWithProgress(options: {
+  apiKey?: string; economy?: boolean; freeOnly?: boolean; ymlUrl?: string; imageTimeoutSec?: number;
+  maxWebImages?: number; webImages?: boolean; googleApiKey?: string; googleCx?: string;
+}, onProgress: (ev: ProgressEvent) => void): Promise<UpdateResult> {
   const res = await fetch(`${API_BASE}/update-database-stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({
-      api_key: options.apiKey || undefined,
-      economy: !!options.economy,
-      free_only: !!options.freeOnly,
-      yml_url: options.ymlUrl || undefined,
-      image_timeout_sec: options.imageTimeoutSec ?? 15,
-      max_web_images: options.maxWebImages ?? 100,
-      web_images: options.webImages !== false,
-      google_api_key: options.googleApiKey || undefined,
-      google_cx: options.googleCx || undefined,
+      api_key: options.apiKey || undefined, economy: !!options.economy, free_only: !!options.freeOnly,
+      yml_url: options.ymlUrl || undefined, image_timeout_sec: options.imageTimeoutSec ?? 15,
+      max_web_images: options.maxWebImages ?? 100, web_images: options.webImages !== false,
+      google_api_key: options.googleApiKey || undefined, google_cx: options.googleCx || undefined,
     }),
   });
   if (!res.ok) {
@@ -272,14 +143,9 @@ export async function updateDatabaseWithProgress(
   }
   return readSseStream(res, onProgress);
 }
-
-export async function importCatalogWithProgress(
-  items: unknown[],
-  onProgress: (ev: ProgressEvent) => void,
-): Promise<UpdateResult> {
+export async function importCatalogWithProgress(items: unknown[], onProgress: (ev: ProgressEvent) => void): Promise<UpdateResult> {
   const res = await fetch(`${API_BASE}/catalog/import-stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ items }),
   });
   if (!res.ok) {
@@ -288,23 +154,14 @@ export async function importCatalogWithProgress(
   }
   return readSseStream(res, onProgress);
 }
-
 export async function exportCatalog(): Promise<{ count: number; items: unknown[] }> {
   const res = await fetch(`${API_BASE}/catalog/export`);
   if (!res.ok) throw new Error('Не удалось экспортировать каталог');
   return res.json();
 }
-
-export async function importCatalog(items: unknown[]): Promise<{
-  status: string;
-  added: number;
-  updated: number;
-  message: string;
-}> {
+export async function importCatalog(items: unknown[]): Promise<{ status: string; added: number; updated: number; message: string }> {
   const res = await fetch(`${API_BASE}/catalog/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -312,7 +169,6 @@ export async function importCatalog(items: unknown[]): Promise<{
   }
   return res.json();
 }
-
 export function formatPrice(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—';
   return `${Math.round(n).toLocaleString('ru-RU')} ₽`;
