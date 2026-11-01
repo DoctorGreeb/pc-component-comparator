@@ -7,6 +7,11 @@ import {
   formatPrice,
 } from '../api'
 import './ConfiguratorPage.css'
+import {
+  isCompatibleWithBuild,
+  checkCompat,
+  ddrLockMessage,
+} from './configCompat'
 
 const BUILD_KEY = 'pc_comparator_build'
 
@@ -60,7 +65,6 @@ const SPEC_SORT_KEYS: Record<string, { key: string; labels: string[] }[]> = {
   ],
 }
 
-/** Короткие подписи в строке списка */
 const ROW_SPEC_LABELS: Record<string, string[]> = {
   cpu: ['Сокет', 'Общее количество ядер', 'Количество ядер', 'Максимальная частота', 'Тепловыделение'],
   motherboard: ['Сокет', 'Чипсет', 'Тип памяти', 'Форм-фактор'],
@@ -108,7 +112,6 @@ function specVal(item: ComponentListItem | null | undefined, labels: string[]): 
   return ''
 }
 
-/** Все непустые specs в стабильном порядке приоритета */
 function rowSpecsLine(item: ComponentListItem, slotKey: string): string {
   const preferred = ROW_SPEC_LABELS[slotKey] || []
   const parts: string[] = []
@@ -137,7 +140,6 @@ function normalizeSocket(raw: string): string {
   let s = raw.toLowerCase()
   s = s.replace(/socket|сокет/gi, '')
   s = s.replace(/\s+/g, '')
-  // AM4 / AM5 / LGA1700 / LGA1200 / sTRX4 …
   const m =
     s.match(/am\d+/i) ||
     s.match(/lga\d+/i) ||
@@ -146,131 +148,6 @@ function normalizeSocket(raw: string): string {
     s.match(/fm\d+/i)
   if (m) return m[0].toLowerCase()
   return s.trim()
-}
-
-function extractDdr(raw: string): string {
-  const m = raw.match(/ddr\s*([45])/i)
-  return m ? `ddr${m[1]}` : ''
-}
-
-function socketsMatch(a: string, b: string): boolean {
-  // мягко: нет данных → совместимо
-  if (!a?.trim() || !b?.trim()) return true
-  const na = normalizeSocket(a)
-  const nb = normalizeSocket(b)
-  if (!na || !nb) return true
-  return na === nb || na.includes(nb) || nb.includes(na)
-}
-
-function ddrMatch(a: string, b: string): boolean {
-  if (!a?.trim() || !b?.trim()) return true
-  const da = extractDdr(a)
-  const db = extractDdr(b)
-  // если DDR не извлекли — не режем
-  if (!da || !db) return true
-  return da === db
-}
-
-function itemSocket(item: ComponentListItem): string {
-  return specVal(item, ['Сокет', 'Socket'])
-}
-
-function itemMemType(item: ComponentListItem): string {
-  return specVal(item, ['Тип памяти', 'Memory Type', 'DDR'])
-}
-
-/**
- * Совместимость только при явном конфликте известных значений.
- * Нет сокета/DDR в спеках → позиция остаётся в списке.
- */
-function isCompatibleWithBuild(
-  slotKey: string,
-  item: ComponentListItem,
-  build: BuildMap,
-): boolean {
-  const cpu = build.cpu
-  const mb = build.motherboard
-  const ram = build.ram
-
-  if (slotKey === 'cpu') {
-    if (mb) {
-      const a = itemSocket(item)
-      const b = itemSocket(mb)
-      if (a && b && !socketsMatch(a, b)) return false
-    }
-    return true
-  }
-
-  if (slotKey === 'motherboard') {
-    if (cpu) {
-      const a = itemSocket(item)
-      const b = itemSocket(cpu)
-      if (a && b && !socketsMatch(a, b)) return false
-    }
-    if (ram) {
-      const a = itemMemType(item)
-      const b = itemMemType(ram)
-      if (a && b && !ddrMatch(a, b)) return false
-    }
-    return true
-  }
-
-  if (slotKey === 'ram') {
-    if (mb) {
-      const a = itemMemType(item)
-      const b = itemMemType(mb)
-      if (a && b && !ddrMatch(a, b)) return false
-    }
-    return true
-  }
-
-  if (slotKey === 'cooler') {
-    const coolSock = itemSocket(item)
-    if (coolSock) {
-      if (cpu) {
-        const b = itemSocket(cpu)
-        if (b && !socketsMatch(coolSock, b)) return false
-      }
-      if (mb) {
-        const b = itemSocket(mb)
-        if (b && !socketsMatch(coolSock, b)) return false
-      }
-    }
-    return true
-  }
-
-  return true
-}
-
-function checkCompat(build: BuildMap): string[] {
-  const warns: string[] = []
-  const cpu = build.cpu
-  const mb = build.motherboard
-  const ram = build.ram
-  const psu = build.psu
-  const gpu = build.gpu
-
-  if (cpu && mb) {
-    const sockCpu = itemSocket(cpu)
-    const sockMb = itemSocket(mb)
-    if (sockCpu && sockMb && !socketsMatch(sockCpu, sockMb)) {
-      warns.push(`Сокет: процессор «${sockCpu}» и плата «${sockMb}» несовместимы`)
-    }
-  }
-  if (mb && ram) {
-    const typeMb = itemMemType(mb)
-    const typeRam = itemMemType(ram)
-    if (typeMb && typeRam && !ddrMatch(typeMb, typeRam)) {
-      warns.push(`Память: плата «${typeMb}», модули «${typeRam}»`)
-    }
-  }
-  if (psu && gpu) {
-    const watt = parseInt(specVal(psu, ['Мощность', 'Wattage']).replace(/\D/g, ''), 10)
-    if (watt && watt < 450) {
-      warns.push(`БП ${watt} Вт может быть слабоват для связки с видеокартой`)
-    }
-  }
-  return warns
 }
 
 function parseSpecNumber(raw: string): number {
@@ -317,7 +194,6 @@ function facetValues(items: ComponentListItem[], labels: string[]): string[] {
     .slice(0, 40)
 }
 
-/** Загрузить ВСЕ страницы категории */
 async function fetchAllInCategory(category: string): Promise<ComponentListItem[]> {
   const pageSize = 120
   let skip = 0
@@ -446,6 +322,11 @@ export function ConfiguratorPage() {
     return `В категории ${rawItems.length} шт. · после совместимости ${compatibleItems.length} · в списке ${filteredItems.length}`
   }, [activeSlot, rawItems.length, compatibleItems.length, filteredItems.length])
 
+  const ddrLockNote = useMemo(
+    () => ddrLockMessage(build, activeSlot),
+    [build, activeSlot],
+  )
+
   const selectPart = (item: ComponentListItem) => {
     if (!activeSlot) return
     setBuild((prev) => ({ ...prev, [activeSlot]: item }))
@@ -480,8 +361,8 @@ export function ConfiguratorPage() {
         <div>
           <h1>Конфигуратор ПК</h1>
           <p className="cfg-sub">
-            Список подгружает всю категорию из базы. Совместимость режет только при явном
-            конфликте сокета/DDR; товары без этих полей в спеках остаются видимыми.
+            Совместимость фильтрует список: AM5 → только DDR5, AM4 → только DDR4.
+            Сокет процессора и платы должен совпадать.
           </p>
         </div>
         <div className="cfg-summary">
@@ -560,107 +441,74 @@ export function ConfiguratorPage() {
       </div>
 
       {activeSlot && (
-        <div className="cfg-picker-backdrop" onClick={() => setActiveSlot(null)}>
-          <div className="cfg-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="cfg-picker-head">
-              <h2>{catRu(activeSlot)}</h2>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setActiveSlot(null)}>
-                ✕
-              </button>
-            </div>
+        <div className="cfg-picker-panel">
+          <div className="cfg-picker-head">
+            <h2>Выбор: {catRu(activeSlot)}</h2>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setActiveSlot(null)}>
+              Закрыть
+            </button>
+          </div>
 
-            {compatNote && <div className="cfg-compat-note">{compatNote}</div>}
-            {loadError && <div className="cfg-load-error">{loadError}</div>}
+          {ddrLockNote && (
+            <div className="cfg-ddr-lock" role="status">{ddrLockNote}</div>
+          )}
+          {compatNote && <div className="cfg-compat-note">{compatNote}</div>}
 
-            <div className="cfg-picker-filters">
+          <div className="cfg-picker-bar">
+            <input
+              type="search"
+              placeholder="Поиск по названию…"
+              value={pickerQ}
+              onChange={(e) => setPickerQ(e.target.value)}
+            />
+            <select value={sort} onChange={(e) => setSort(e.target.value as SpecSort)}>
+              {sortOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <label className="cfg-compat-toggle">
               <input
-                type="search"
-                placeholder="Поиск по названию и характеристикам…"
-                value={pickerQ}
-                onChange={(e) => setPickerQ(e.target.value)}
-                autoFocus
+                type="checkbox"
+                checked={compatOnly}
+                onChange={(e) => setCompatOnly(e.target.checked)}
               />
-              <select value={sort} onChange={(e) => setSort(e.target.value as SpecSort)}>
-                {sortOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+              Только совместимые
+            </label>
+          </div>
 
-            <div className="cfg-compat-toggle">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={compatOnly}
-                  onChange={(e) => setCompatOnly(e.target.checked)}
-                />
-                Только совместимые с выбранными слотами
-              </label>
-            </div>
+          {pickerLoading && <div className="cfg-loading">Загрузка категории…</div>}
+          {loadError && <div className="cfg-error">{loadError}</div>}
 
-            <div className="cfg-spec-filters">
-              {(SPEC_SORT_KEYS[activeSlot] || []).map((s) => {
-                const values = facetValues(compatibleItems, s.labels)
-                if (values.length < 2) return null
-                return (
-                  <label key={s.key} className="cfg-spec-filter">
-                    <span>{s.labels[0]}</span>
-                    <select
-                      value={specFilters[s.key] || ''}
-                      onChange={(e) =>
-                        setSpecFilters((prev) => ({
-                          ...prev,
-                          [s.key]: e.target.value,
-                        }))
-                      }
-                    >
-                      <option value="">Все</option>
-                      {values.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )
-              })}
+          {!pickerLoading && filteredItems.length === 0 && (
+            <div className="cfg-empty">
+              {compatOnly
+                ? 'Нет совместимых позиций. Снимите «Только совместимые» или смените уже выбранные слоты.'
+                : 'Ничего не найдено.'}
             </div>
+          )}
 
-            <div className="cfg-picker-list">
-              {pickerLoading && <div className="cfg-empty">Загрузка всей категории…</div>}
-              {!pickerLoading && filteredItems.length === 0 && (
-                <div className="cfg-empty">
-                  {rawItems.length === 0
-                    ? 'В базе пусто по этой категории. Обновите базу.'
-                    : compatibleItems.length === 0 && compatOnly
-                      ? 'Фильтр совместимости отсёк всё. Снимите галочку «Только совместимые» или очистите конфликтующий слот.'
-                      : 'Ничего не найдено по поиску/фильтрам. Очистите строку поиска.'}
+          <div className="cfg-list">
+            {filteredItems.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                className="cfg-row"
+                onClick={() => selectPart(it)}
+              >
+                {it.image_url ? (
+                  <img src={it.image_url} alt="" loading="lazy" />
+                ) : (
+                  <div className="cfg-row-ph" />
+                )}
+                <div className="cfg-row-main">
+                  <div className="cfg-row-name">{it.name}</div>
+                  <div className="cfg-row-specs">{rowSpecsLine(it, activeSlot)}</div>
                 </div>
-              )}
-              {!pickerLoading &&
-                filteredItems.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="cfg-picker-row"
-                    onClick={() => selectPart(item)}
-                  >
-                    {item.image_url ? (
-                      <img src={item.image_url} alt="" loading="lazy" />
-                    ) : (
-                      <div className="cfg-picker-noimg" />
-                    )}
-                    <div className="cfg-picker-meta">
-                      <div className="cfg-name">{item.name}</div>
-                      <div className="cfg-row-specs">{rowSpecsLine(item, activeSlot)}</div>
-                      {item.brand && <div className="cfg-brand">{item.brand}</div>}
-                    </div>
-                    <div className="cfg-price">{formatPrice(item.min_price)}</div>
-                  </button>
-                ))}
-            </div>
+                <div className="cfg-row-price">{formatPrice(it.min_price)}</div>
+              </button>
+            ))}
           </div>
         </div>
       )}
