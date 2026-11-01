@@ -136,20 +136,6 @@ function rowSpecsLine(item: ComponentListItem, slotKey: string): string {
   return parts.slice(0, 4).join(' · ')
 }
 
-function normalizeSocket(raw: string): string {
-  let s = raw.toLowerCase()
-  s = s.replace(/socket|сокет/gi, '')
-  s = s.replace(/\s+/g, '')
-  const m =
-    s.match(/am\d+/i) ||
-    s.match(/lga\d+/i) ||
-    s.match(/strx\d+/i) ||
-    s.match(/trx\d+/i) ||
-    s.match(/fm\d+/i)
-  if (m) return m[0].toLowerCase()
-  return s.trim()
-}
-
 function parseSpecNumber(raw: string): number {
   const m = raw.replace(',', '.').match(/[\d.]+/)
   return m ? parseFloat(m[0]) : NaN
@@ -179,19 +165,6 @@ function sortItems(items: ComponentListItem[], sort: SpecSort, slotKey: string):
     })
   }
   return arr
-}
-
-function facetValues(items: ComponentListItem[], labels: string[]): string[] {
-  const set = new Map<string, number>()
-  for (const it of items) {
-    const v = specVal(it, labels).trim()
-    if (!v) continue
-    set.set(v, (set.get(v) || 0) + 1)
-  }
-  return [...set.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'))
-    .map(([v]) => v)
-    .slice(0, 40)
 }
 
 async function fetchAllInCategory(category: string): Promise<ComponentListItem[]> {
