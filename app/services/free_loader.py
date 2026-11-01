@@ -1,12 +1,13 @@
 """
 Бесплатная подгрузка БЕЗ API-ключа ReefAPI.
 
-Легальные источники:
-1) docyx/pc-part-dataset (публичный JSON на GitHub, характеристики + ориентир. цена USD)
-2) GPU Ark free REST API (https://gpuark.com/api) — без ключа, только GPU-спеки
-3) Пользовательский YML-фид (URL) — магазин сам публикует фид для Маркета/Директа
+Источники:
+1) docyx/pc-part-dataset (GitHub) — характеристики + ориентир. цена USD
+2) GPU Ark free REST — спеки GPU
+3) Пользовательский YML-фид
 
-Не используем обход антибота DNS/Citilink — это не легальная альтернатива.
+После загрузки: обогащение картинками и недостающими спеками
+из уже загруженных товаров (DNS/Маркет/WB) по совпадению названия.
 """
 from __future__ import annotations
 
@@ -22,19 +23,16 @@ from sqlalchemy.orm import Session
 from app import models
 from app.services.dns_loader import _extract_brand
 
-# Ориентировочный курс для отображения USD→RUB (датасет PCPartPicker в долларах)
 USD_TO_RUB = 90.0
-
 PCPART_BASE = "https://raw.githubusercontent.com/docyx/pc-part-dataset/main/data/json"
 
-# category name в нашей БД → файл датасета
 PCPART_FILES: dict[str, str] = {
     "cpu": "cpu.json",
     "gpu": "video-card.json",
     "motherboard": "motherboard.json",
     "ram": "memory.json",
-    "ssd": "internal-hard-drive.json",  # фильтруем SSD
-    "hdd": "internal-hard-drive.json",  # фильтруем HDD
+    "ssd": "internal-hard-drive.json",
+    "hdd": "internal-hard-drive.json",
     "psu": "power-supply.json",
     "case": "case.json",
     "cooler": "cpu-cooler.json",
@@ -43,9 +41,64 @@ PCPART_FILES: dict[str, str] = {
 GPUARK_BASE = "https://gpuark.com/api/v1"
 
 HEADERS = {
-    "User-Agent": "PCComparator/0.4 (+https://github.com/DoctorGreeb/pc-component-comparator; free open-data loader)",
+    "User-Agent": "PCComparator/0.4.2 (+https://github.com/DoctorGreeb/pc-component-comparator)",
     "Accept": "application/json, application/xml, text/xml, */*",
 }
+
+# стоп-слова для матчинга имён
+_STOP = {
+    "the", "and", "for", "with", "black", "white", "rgb", "oc", "gaming",
+    "edition", "series", "pci", "pcie", "box", "oem", "tray", "rtl",
+}
+
+
+def _norm_name(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[^\wа-яё]+", " ", s, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _tokens(s: str) -> set[str]:
+    return {t for t in _norm_name(s).split() if len(t) > 1 and t not in _STOP}
+
+
+def _name_similarity(a: str, b: str) -> float:
+    """0..1 по пересечению токенов + бонус за общий модельный номер."""
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = ta & tb
+    union = ta | tb
+    jaccard = len(inter) / len(union)
+    # модельные маркеры: 7800x3d, rtx4060, b650, 990pro
+    models_a = {t for t in ta if re.search(r"\d", t) and len(t) >= 3}
+    models_b = {t for t in tb if re.search(r"\d", t) and len(t) >= 3}
+    model_bonus = 0.25 if models_a and models_a & models_b else 0.0
+    return min(1.0, jaccard + model_bonus)
+
+
+def _parse_specs(raw) -> dict:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _fmt(val: Any) -> str | None:
+    if val is None or val == "":
+        return None
+    if isinstance(val, bool):
+        return "да" if val else "нет"
+    if isinstance(val, float):
+        return str(int(val)) if val == int(val) else str(val)
+    return str(val)
 
 
 def _ensure_store(db: Session, name: str, url: str) -> models.Store:
@@ -55,6 +108,47 @@ def _ensure_store(db: Session, name: str, url: str) -> models.Store:
         db.add(store)
         db.flush()
     return store
+
+
+def _find_donor(
+    db: Session,
+    *,
+    category_id: int,
+    name: str,
+    exclude_id: int | None = None,
+    need_image: bool = True,
+    need_specs: bool = True,
+) -> models.Component | None:
+    """Ищем уже загруженный товар с картинкой/спеками по похожему имени."""
+    candidates = (
+        db.query(models.Component)
+        .filter(models.Component.category_id == category_id)
+        .all()
+    )
+    best: models.Component | None = None
+    best_score = 0.45  # порог
+    for c in candidates:
+        if exclude_id and c.id == exclude_id:
+            continue
+        if need_image and not c.image_url:
+            continue
+        if need_specs and not _parse_specs(c.specs):
+            # если нужны только спеки и их нет — пропускаем
+            if not need_image:
+                continue
+        score = _name_similarity(name, c.name or "")
+        if score > best_score:
+            best_score = score
+            best = c
+    return best
+
+
+def _merge_specs(base: dict | None, donor: dict | None) -> dict:
+    out = dict(base or {})
+    for k, v in (donor or {}).items():
+        if k not in out or not out[k]:
+            out[k] = v
+    return out
 
 
 def _upsert(
@@ -71,21 +165,47 @@ def _upsert(
     product_url: str | None = None,
     description: str | None = None,
 ) -> bool:
+    # обогащение до записи
+    if not image_url:
+        donor = _find_donor(
+            db, category_id=category.id, name=name, need_image=True, need_specs=False
+        )
+        if donor and donor.image_url:
+            image_url = donor.image_url
+            # подтянуть спеки с донора, если своих мало
+            donor_specs = _parse_specs(donor.specs)
+            if donor_specs:
+                specs = _merge_specs(specs, donor_specs)
+            if not brand and donor.brand:
+                brand = donor.brand
+    elif not specs or len(specs) < 2:
+        donor = _find_donor(
+            db, category_id=category.id, name=name, need_image=False, need_specs=True
+        )
+        if donor:
+            specs = _merge_specs(specs, _parse_specs(donor.specs))
+
     existing = (
         db.query(models.Price)
         .filter(models.Price.store_id == store.id, models.Price.external_id == external_id)
         .first()
     )
     specs_json = json.dumps(specs, ensure_ascii=False) if specs else None
+
     if existing:
         comp = existing.component
         comp.name = name
         if brand:
             comp.brand = brand
         if specs_json:
-            comp.specs = specs_json
-        if image_url:
-            comp.image_url = image_url or comp.image_url
+            # не затираем более богатые спеки
+            old = _parse_specs(comp.specs)
+            merged = _merge_specs(old, specs)
+            comp.specs = json.dumps(merged, ensure_ascii=False)
+        if image_url and not comp.image_url:
+            comp.image_url = image_url
+        elif image_url and comp.image_url and "placeholder" in (comp.image_url or ""):
+            comp.image_url = image_url
         if description:
             comp.description = description
         if price is not None:
@@ -93,16 +213,31 @@ def _upsert(
         existing.product_url = product_url or existing.product_url
         return False
 
-    comp = models.Component(
-        category_id=category.id,
-        name=name,
-        brand=brand or _extract_brand(name),
-        description=description,
-        image_url=image_url,
-        specs=specs_json,
+    # если есть товар с почти тем же именем в другой витрине — привяжем цену к нему
+    similar = _find_donor(
+        db, category_id=category.id, name=name, need_image=False, need_specs=False
     )
-    db.add(comp)
-    db.flush()
+    if similar and _name_similarity(name, similar.name or "") >= 0.75:
+        comp = similar
+        if image_url and not comp.image_url:
+            comp.image_url = image_url
+        if specs:
+            merged = _merge_specs(_parse_specs(comp.specs), specs)
+            comp.specs = json.dumps(merged, ensure_ascii=False)
+        if brand and not comp.brand:
+            comp.brand = brand
+    else:
+        comp = models.Component(
+            category_id=category.id,
+            name=name,
+            brand=brand or _extract_brand(name),
+            description=description,
+            image_url=image_url,
+            specs=specs_json,
+        )
+        db.add(comp)
+        db.flush()
+
     db.add(
         models.Price(
             component_id=comp.id,
@@ -119,34 +254,40 @@ def _upsert(
 
 def _cpu_specs(item: dict) -> dict:
     out = {}
-    if item.get("core_count") is not None:
-        out["Общее количество ядер"] = str(item["core_count"])
-    if item.get("core_clock") is not None:
-        out["Базовая частота"] = f"{item['core_clock']} GHz"
-    if item.get("boost_clock") is not None:
-        out["Максимальная частота"] = f"{item['boost_clock']} GHz"
-    if item.get("tdp") is not None:
-        out["Тепловыделение"] = f"{item['tdp']} Вт"
-    if item.get("microarchitecture"):
-        out["Архитектура"] = str(item["microarchitecture"])
-    if item.get("graphics"):
-        out["Графика"] = str(item["graphics"])
+    mapping = [
+        ("core_count", "Общее количество ядер", None),
+        ("core_clock", "Базовая частота", " GHz"),
+        ("boost_clock", "Максимальная частота", " GHz"),
+        ("tdp", "Тепловыделение", " Вт"),
+        ("microarchitecture", "Архитектура", None),
+        ("graphics", "Графика", None),
+        ("smt", "Многопоточность", None),
+    ]
+    for key, label, suffix in mapping:
+        v = _fmt(item.get(key))
+        if v is not None:
+            out[label] = f"{v}{suffix or ''}"
     return out
 
 
 def _gpu_specs(item: dict) -> dict:
     out = {}
-    for k, label in [
-        ("chipset", "Графический чип"),
-        ("memory", "Объем видеопамяти"),
-        ("memory_type", "Тип видеопамяти"),
-        ("core_clock", "Частота видеочипа"),
-        ("boost_clock", "Boost частота"),
-        ("color", "Цвет"),
-        ("length", "Длина видеокарты"),
-    ]:
-        if item.get(k) is not None:
-            out[label] = str(item[k])
+    if item.get("chipset") is not None:
+        out["Графический чип"] = str(item["chipset"])
+    mem = item.get("memory")
+    if mem is not None:
+        # dataset stores GB as number
+        out["Объем видеопамяти"] = f"{mem} ГБ" if isinstance(mem, (int, float)) else str(mem)
+    if item.get("memory_type"):
+        out["Тип видеопамяти"] = str(item["memory_type"])
+    if item.get("core_clock") is not None:
+        out["Частота видеочипа"] = f"{item['core_clock']} МГц"
+    if item.get("boost_clock") is not None:
+        out["Boost частота"] = f"{item['boost_clock']} МГц"
+    if item.get("color") is not None:
+        out["Цвет"] = str(item["color"])
+    if item.get("length") is not None:
+        out["Длина видеокарты"] = f"{item['length']} мм"
     return out
 
 
@@ -160,52 +301,70 @@ def _ram_specs(item: dict) -> dict:
     if isinstance(modules, list) and len(modules) >= 2:
         out["Количество модулей"] = str(modules[0])
         out["Объем одного модуля"] = f"{modules[1]} ГБ"
-        out["Суммарный объем"] = f"{modules[0] * modules[1]} ГБ"
+        try:
+            out["Суммарный объем"] = f"{int(modules[0]) * int(modules[1])} ГБ"
+        except Exception:
+            pass
     if item.get("cas_latency") is not None:
         out["Тайминги"] = f"CL{item['cas_latency']}"
+    if item.get("first_word_latency") is not None:
+        out["First Word Latency"] = f"{item['first_word_latency']} нс"
+    if item.get("color") is not None:
+        out["Цвет"] = str(item["color"])
     return out
 
 
 def _mb_specs(item: dict) -> dict:
     out = {}
-    for k, label in [
-        ("socket", "Сокет"),
-        ("form_factor", "Форм-фактор"),
-        ("chipset", "Чипсет"),
-        ("memory_max", "Максимальный объем памяти"),
-        ("memory_slots", "Количество слотов памяти"),
-        ("color", "Цвет"),
+    for k, label, suf in [
+        ("socket", "Сокет", None),
+        ("form_factor", "Форм-фактор", None),
+        ("chipset", "Чипсет", None),
+        ("memory_max", "Максимальный объем памяти", " ГБ"),
+        ("memory_slots", "Количество слотов памяти", None),
+        ("color", "Цвет", None),
+        ("memory_type", "Тип поддерживаемой памяти", None),
     ]:
-        if item.get(k) is not None:
-            out[label] = str(item[k])
+        v = _fmt(item.get(k))
+        if v is not None:
+            out[label] = f"{v}{suf or ''}"
     return out
 
 
 def _storage_specs(item: dict) -> dict:
     out = {}
     if item.get("capacity") is not None:
-        out["Объем"] = f"{item['capacity']} ГБ"
-    if item.get("type") is not None:
-        out["Тип"] = str(item["type"])
-    if item.get("form_factor") is not None:
-        out["Форм-фактор"] = str(item["form_factor"])
-    if item.get("interface") is not None:
-        out["Интерфейс"] = str(item["interface"])
-    if item.get("cache") is not None:
-        out["Кэш-память"] = str(item["cache"])
+        cap = item["capacity"]
+        try:
+            cap_i = int(cap)
+            out["Объем"] = f"{cap_i} ГБ" if cap_i < 1000 else f"{cap_i / 1000:g} ТБ"
+        except Exception:
+            out["Объем"] = str(cap)
+    for k, label in [
+        ("type", "Тип"),
+        ("form_factor", "Форм-фактор"),
+        ("interface", "Интерфейс"),
+        ("cache", "Кэш-память"),
+    ]:
+        v = _fmt(item.get(k))
+        if v is not None:
+            out[label] = v
     return out
 
 
 def _psu_specs(item: dict) -> dict:
     out = {}
+    if item.get("wattage") is not None:
+        out["Мощность"] = f"{item['wattage']} Вт"
     for k, label in [
-        ("wattage", "Мощность"),
         ("efficiency", "Сертификат 80 PLUS"),
         ("modular", "Модульность"),
         ("type", "Форм-фактор"),
+        ("color", "Цвет"),
     ]:
-        if item.get(k) is not None:
-            out[label] = str(item[k])
+        v = _fmt(item.get(k))
+        if v is not None:
+            out[label] = v
     return out
 
 
@@ -216,9 +375,11 @@ def _case_specs(item: dict) -> dict:
         ("color", "Цвет"),
         ("side_panel", "Боковая панель"),
         ("external_volume", "Объем"),
+        ("motherboard_form_factor", "Поддерживаемые форм-факторы плат"),
     ]:
-        if item.get(k) is not None:
-            out[label] = str(item[k])
+        v = _fmt(item.get(k))
+        if v is not None:
+            out[label] = v
     return out
 
 
@@ -230,6 +391,8 @@ def _cooler_specs(item: dict) -> dict:
         out["Шум"] = str(item["noise_level"])
     if item.get("size") is not None:
         out["Размер радиатора"] = str(item["size"])
+    if item.get("color") is not None:
+        out["Цвет"] = str(item["color"])
     return out
 
 
@@ -246,12 +409,70 @@ SPEC_BUILDERS = {
 }
 
 
-async def load_pcpart_dataset(db: Session, limit_per_cat: int = 80) -> dict[str, Any]:
+def enrich_missing_media(db: Session) -> dict[str, int]:
+    """
+    Проход по всем товарам без картинки / с бедными спеками:
+    подтянуть image_url и specs у доноров с похожим именем в той же категории.
+    """
+    components = db.query(models.Component).all()
+    by_cat: dict[int, list[models.Component]] = {}
+    for c in components:
+        by_cat.setdefault(c.category_id, []).append(c)
+
+    images_filled = 0
+    specs_filled = 0
+
+    for cat_id, group in by_cat.items():
+        donors_img = [c for c in group if c.image_url]
+        donors_spec = [c for c in group if _parse_specs(c.specs)]
+
+        for c in group:
+            # картинка
+            if not c.image_url and donors_img:
+                best, best_s = None, 0.5
+                for d in donors_img:
+                    if d.id == c.id:
+                        continue
+                    s = _name_similarity(c.name or "", d.name or "")
+                    if s > best_s:
+                        best_s, best = s, d
+                if best and best.image_url:
+                    c.image_url = best.image_url
+                    images_filled += 1
+                    #顺带 спеки
+                    if not _parse_specs(c.specs):
+                        ds = _parse_specs(best.specs)
+                        if ds:
+                            c.specs = json.dumps(ds, ensure_ascii=False)
+                            specs_filled += 1
+
+            # спеки
+            cur = _parse_specs(c.specs)
+            if len(cur) < 2 and donors_spec:
+                best, best_s = None, 0.5
+                for d in donors_spec:
+                    if d.id == c.id:
+                        continue
+                    s = _name_similarity(c.name or "", d.name or "")
+                    if s > best_s:
+                        best_s, best = s, d
+                if best:
+                    merged = _merge_specs(cur, _parse_specs(best.specs))
+                    if len(merged) > len(cur):
+                        c.specs = json.dumps(merged, ensure_ascii=False)
+                        specs_filled += 1
+                    if not c.image_url and best.image_url:
+                        c.image_url = best.image_url
+                        images_filled += 1
+
+    db.commit()
+    return {"images_filled": images_filled, "specs_filled": specs_filled}
+
+
+async def load_pcpart_dataset(db: Session, limit_per_cat: int = 120) -> dict[str, Any]:
     categories = {c.name: c for c in db.query(models.Category).all()}
     store = _ensure_store(
-        db,
-        "PCPartPicker dataset",
-        "https://github.com/docyx/pc-part-dataset",
+        db, "PCPartPicker dataset", "https://github.com/docyx/pc-part-dataset"
     )
     added = 0
     loaded_cats = 0
@@ -281,7 +502,6 @@ async def load_pcpart_dataset(db: Session, limit_per_cat: int = 80) -> dict[str,
                 if not name:
                     continue
 
-                # SSD/HDD фильтр по type
                 if cat_name == "ssd":
                     t = str(item.get("type") or "").lower()
                     if t and t != "ssd" and "ssd" not in t:
@@ -296,6 +516,15 @@ async def load_pcpart_dataset(db: Session, limit_per_cat: int = 80) -> dict[str,
                 if isinstance(price_usd, (int, float)) and price_usd > 0:
                     price_rub = round(float(price_usd) * USD_TO_RUB, 2)
 
+                specs = builder(item)
+                # если builder вернул пусто — сваливаем все простые поля
+                if not specs:
+                    for k, v in item.items():
+                        if k in ("name", "price", "price_per_gb") or v is None:
+                            continue
+                        if isinstance(v, (str, int, float, bool)):
+                            specs[k] = str(v)
+
                 ext = f"pcp-{cat_name}-{re.sub(r'[^a-zA-Z0-9]+', '-', name)[:80].lower()}"
                 if _upsert(
                     db,
@@ -305,7 +534,7 @@ async def load_pcpart_dataset(db: Session, limit_per_cat: int = 80) -> dict[str,
                     brand=_extract_brand(name),
                     external_id=ext,
                     price=price_rub,
-                    specs=builder(item),
+                    specs=specs,
                     description="Ориентир. цена из открытого датасета PCPartPicker (USD→RUB)",
                 ):
                     added += 1
@@ -317,12 +546,11 @@ async def load_pcpart_dataset(db: Session, limit_per_cat: int = 80) -> dict[str,
         "source": "pcpart_dataset",
         "components_added": added,
         "categories": loaded_cats,
-        "note": f"Цены ≈ USD×{USD_TO_RUB} (ориентир, не витрина РФ)",
+        "note": f"Цены ≈ USD×{USD_TO_RUB} (ориентир)",
     }
 
 
-async def load_gpu_ark(db: Session, pages: int = 5, per_page: int = 50) -> dict[str, Any]:
-    """Спеки GPU с gpuark.com — бесплатный API без ключа."""
+async def load_gpu_ark(db: Session, pages: int = 8, per_page: int = 50) -> dict[str, Any]:
     categories = {c.name: c for c in db.query(models.Category).all()}
     cat = categories.get("gpu")
     if not cat:
@@ -350,7 +578,6 @@ async def load_gpu_ark(db: Session, pages: int = 5, per_page: int = 50) -> dict[
                 name = item.get("name") or ""
                 if not name:
                     continue
-                # потребительские карты
                 low = name.lower()
                 if not any(x in low for x in ("geforce", "radeon", "rtx", "rx ", "arc ")):
                     continue
@@ -363,18 +590,49 @@ async def load_gpu_ark(db: Session, pages: int = 5, per_page: int = 50) -> dict[
                     specs["Ядра"] = str(item["cores"])
                 if item.get("fp32_performance") is not None:
                     specs["FP32 TFLOPS"] = str(item["fp32_performance"])
-                slug = item.get("slug") or name
+                if item.get("vendor"):
+                    specs["Производитель"] = str(item["vendor"])
+                if item.get("card_release_date"):
+                    specs["Дата выхода"] = str(item["card_release_date"])
+
+                # детальная карточка — больше полей (опционально, 1 запрос)
+                slug = item.get("slug")
+                image_url = None
+                if slug:
+                    try:
+                        dresp = await client.get(f"{GPUARK_BASE}/gpus/{slug}/")
+                        if dresp.status_code == 200:
+                            detail = dresp.json()
+                            if isinstance(detail, dict):
+                                for k, label in [
+                                    ("tdp", "TDP"),
+                                    ("bus_width", "Разрядность шины памяти"),
+                                    ("memory_bus", "Разрядность шины памяти"),
+                                    ("boost_clock", "Boost частота"),
+                                    ("base_clock", "Частота видеочипа"),
+                                ]:
+                                    if detail.get(k) is not None and label not in specs:
+                                        specs[label] = str(detail[k])
+                                image_url = (
+                                    detail.get("image")
+                                    or detail.get("image_url")
+                                    or detail.get("photo")
+                                )
+                    except Exception:
+                        pass
+
                 if _upsert(
                     db,
                     category=cat,
                     store=store,
                     name=name,
                     brand=item.get("vendor") or item.get("manufacturer"),
-                    external_id=f"gpuark-{slug}"[:120],
+                    external_id=f"gpuark-{slug or name}"[:120],
                     price=None,
                     specs=specs,
+                    image_url=image_url,
                     product_url=item.get("url"),
-                    description="Спецификации GPU Ark (без цены)",
+                    description="Спецификации GPU Ark",
                 ):
                     added += 1
             db.commit()
@@ -389,13 +647,11 @@ def _yml_local(tag: str) -> str:
 
 
 async def load_yml_feed(db: Session, feed_url: str, limit: int = 300) -> dict[str, Any]:
-    """Импорт публичного YML-фида магазина (легально, если URL открыт)."""
     parsed = urlparse(feed_url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Нужен http(s) URL фида")
 
     categories = {c.name: c for c in db.query(models.Category).all()}
-    # эвристика категории по тексту
     KEYWORDS = {
         "cpu": ["процессор", "cpu", "ryzen", "core i"],
         "gpu": ["видеокарта", "geforce", "radeon", "rtx", "rx "],
@@ -408,26 +664,20 @@ async def load_yml_feed(db: Session, feed_url: str, limit: int = 300) -> dict[st
         "cooler": ["кулер", "охлажден", "сво "],
     }
 
-    store_name = parsed.netloc or "YML feed"
-    store = _ensure_store(db, f"YML:{store_name}"[:80], feed_url)
+    store = _ensure_store(db, f"YML:{parsed.netloc or 'feed'}"[:80], feed_url)
 
     async with httpx.AsyncClient(timeout=120.0, headers=HEADERS, follow_redirects=True) as client:
         resp = await client.get(feed_url)
         resp.raise_for_status()
         text = resp.text
 
-    # убираем namespace если есть
-    text = re.sub(r"xmlns(:\w+)?=\"[^\"]*\"", "", text)
+    text = re.sub(r'xmlns(:\w+)?="[^"]*"', "", text)
     try:
         root = ET.fromstring(text)
     except ET.ParseError as e:
         raise ValueError(f"Некорректный XML/YML: {e}") from e
 
-    offers = []
-    for el in root.iter():
-        if _yml_local(el.tag) == "offer":
-            offers.append(el)
-
+    offers = [el for el in root.iter() if _yml_local(el.tag) == "offer"]
     added = 0
     for offer in offers[:limit]:
         oid = offer.attrib.get("id") or ""
@@ -444,7 +694,7 @@ async def load_yml_feed(db: Session, feed_url: str, limit: int = 300) -> dict[st
                     price = None
             elif tag == "url":
                 url = (child.text or "").strip()
-            elif tag == "picture":
+            elif tag == "picture" and not picture:
                 picture = (child.text or "").strip()
             elif tag == "param":
                 pname = child.attrib.get("name") or ""
@@ -484,7 +734,7 @@ async def load_free_sources(
     db: Session,
     *,
     yml_url: str | None = None,
-    limit_per_cat: int = 80,
+    limit_per_cat: int = 120,
 ) -> dict[str, Any]:
     results: dict[str, Any] = {"sources": {}}
     total = 0
@@ -511,9 +761,19 @@ async def load_free_sources(
         except Exception as e:
             results["sources"]["yml_feed"] = {"error": str(e)}
 
+    # всегда: донорские картинки/спеки из уже загруженных (DNS и др.)
+    try:
+        enrich = enrich_missing_media(db)
+        results["sources"]["enrichment"] = enrich
+    except Exception as e:
+        results["sources"]["enrichment"] = {"error": str(e)}
+
     results["components_added"] = total
+    enrich_note = results["sources"].get("enrichment") or {}
     results["message"] = (
         f"Бесплатная подгрузка: +{total}. "
-        "Цены из открытого датасета — ориентир (USD→RUB), не витрина DNS."
+        f"Картинок подставлено: {enrich_note.get('images_filled', 0)}, "
+        f"спек дополнено: {enrich_note.get('specs_filled', 0)}. "
+        "Цены из open-data — ориентир (USD→RUB)."
     )
     return results
