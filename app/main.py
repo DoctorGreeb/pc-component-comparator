@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
@@ -11,10 +12,13 @@ from app.database import engine, get_db, Base
 from app import models, schemas
 from app.services.dns_loader import load_dns_catalog, get_api_key, CreditsExhaustedError
 from app.services.multi_store_loader import load_extra_stores
-from app.services.free_loader import load_free_sources, enrich_missing_media
+from app.services.free_loader import (
+    load_free_sources, enrich_missing_media,
+    load_pcpart_dataset, load_gpu_ark, load_yml_feed,
+)
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="PC Component Comparator", version="0.4.3")
+app = FastAPI(title="PC Component Comparator", version="0.4.4")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 DEFAULT_CATEGORIES = [
@@ -80,7 +84,7 @@ def _component_to_list_item(c):
         min_price=min_p, old_price=old_p, product_url=product_url, specs=_parse_specs(c.specs))
 
 @app.get("/")
-def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.3"}
+def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.4"}
 @app.get("/health")
 def health(): return {"status": "ok"}
 
@@ -140,7 +144,6 @@ async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(N
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ошибка загрузки: {e}")
 
-    # доноры free↔api + web-картинки для товаров без фото
     try:
         enrich = await enrich_missing_media(db, web_images=True, max_web=60)
         notes.append(
@@ -176,6 +179,185 @@ async def update_database_free(body: Optional[schemas.UpdateDatabaseRequest] = B
         note=" · ".join(notes) if notes else "open data",
         components_added=int(free_stats.get("components_added") or 0),
         categories_ready=total_categories, economy=False, credits_exhausted=False)
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/update-database-stream")
+async def update_database_stream(
+    body: Optional[schemas.UpdateDatabaseRequest] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """SSE: события {pct, op, ...} и финал {pct:100, op, result}."""
+
+    api_key = body.api_key if body else None
+    economy = bool(body.economy) if body else False
+    free_only = bool(body.free_only) if body else False
+    yml_url = body.yml_url if body else None
+    sources = (body.sources if body and body.sources else None) or [
+        "dns", "yandex_market", "wildberries"
+    ]
+
+    async def generate():
+        total_added = 0
+        notes: list[str] = []
+        exhausted = False
+        try:
+            yield _sse({"pct": 4, "op": "Подготовка категорий и магазинов…"})
+            for cat in DEFAULT_CATEGORIES:
+                if not db.query(models.Category).filter(models.Category.name == cat["name"]).first():
+                    db.add(models.Category(**cat))
+            for store in DEFAULT_STORES:
+                if not db.query(models.Store).filter(models.Store.name == store["name"]).first():
+                    db.add(models.Store(**store))
+            db.commit()
+            total_categories = db.query(models.Category).count()
+
+            use_free = free_only or not get_api_key(api_key)
+            if use_free:
+                yield _sse({"pct": 12, "op": "Загрузка PCPartPicker dataset (характеристики)…"})
+                try:
+                    r1 = await load_pcpart_dataset(db)
+                    total_added += int(r1.get("components_added") or 0)
+                    notes.append(f"pcpart: +{r1.get('components_added', 0)}")
+                    if r1.get("error"):
+                        notes.append(f"pcpart error: {r1['error']}")
+                except Exception as e:
+                    notes.append(f"pcpart: {e}")
+
+                yield _sse({"pct": 40, "op": "Загрузка спецификаций GPU Ark…"})
+                try:
+                    r2 = await load_gpu_ark(db)
+                    total_added += int(r2.get("components_added") or 0)
+                    notes.append(f"gpu_ark: +{r2.get('components_added', 0)}")
+                except Exception as e:
+                    notes.append(f"gpu_ark: {e}")
+
+                if yml_url and str(yml_url).strip():
+                    yield _sse({"pct": 55, "op": "Импорт YML-фида магазина…"})
+                    try:
+                        r3 = await load_yml_feed(db, str(yml_url).strip())
+                        total_added += int(r3.get("components_added") or 0)
+                        notes.append(f"yml: +{r3.get('components_added', 0)}")
+                    except Exception as e:
+                        notes.append(f"yml: {e}")
+
+                yield _sse({"pct": 70, "op": "Обогащение: доноры характеристик и картинок…"})
+                try:
+                    enrich = await enrich_missing_media(db, web_images=True, max_web=100)
+                    notes.append(
+                        f"enrich img={enrich.get('images_filled', 0)} "
+                        f"specs={enrich.get('specs_filled', 0)} "
+                        f"web={enrich.get('web_filled', 0)}"
+                    )
+                except Exception as e:
+                    notes.append(f"enrich: {e}")
+
+                yield _sse({"pct": 95, "op": "Завершение…"})
+                result = {
+                    "status": "ok",
+                    "message": f"Бесплатная подгрузка: +{total_added}.",
+                    "note": " · ".join(notes) if notes else "open data",
+                    "components_added": total_added,
+                    "categories_ready": total_categories,
+                    "economy": False,
+                    "credits_exhausted": False,
+                }
+                yield _sse({"pct": 100, "op": "Готово", "result": result})
+                return
+
+            try:
+                if "dns" in sources:
+                    yield _sse({"pct": 15, "op": "Загрузка каталога DNS через ReefAPI…"})
+                    stats = await load_dns_catalog(
+                        db, max_per_query=24, pages_per_query=2, api_key=api_key, economy=economy
+                    )
+                    total_added += int(stats.get("components_added") or 0)
+                    notes.append(f"DNS: +{stats.get('components_added', 0)}")
+                    if stats.get("stopped_reason"):
+                        exhausted = True
+
+                extra_sources = [s for s in sources if s in ("yandex_market", "wildberries")]
+                if extra_sources and not exhausted:
+                    yield _sse({"pct": 50, "op": "Загрузка Яндекс Маркет / Wildberries…"})
+                    extra = await load_extra_stores(
+                        db, api_key=api_key, economy=economy, sources=extra_sources
+                    )
+                    total_added += int(extra.get("components_added") or 0)
+                    for name, st in (extra.get("sources") or {}).items():
+                        if isinstance(st, dict):
+                            notes.append(
+                                f"{name}: +{st.get('components_added', 0)}"
+                                if "error" not in st
+                                else f"{name}: ошибка"
+                            )
+
+                if "free" in sources and not exhausted:
+                    yield _sse({"pct": 65, "op": "Доп. open-data источники…"})
+                    free_stats = await load_free_sources(db, yml_url=yml_url)
+                    total_added += int(free_stats.get("components_added") or 0)
+                    notes.append(f"free: +{free_stats.get('components_added', 0)}")
+
+            except CreditsExhaustedError as e:
+                result = {
+                    "status": "credits_exhausted",
+                    "message": str(e),
+                    "note": " · ".join(notes) if notes else None,
+                    "components_added": total_added,
+                    "categories_ready": total_categories,
+                    "economy": economy,
+                    "credits_exhausted": True,
+                }
+                yield _sse({"pct": 100, "op": "Кредиты закончились", "result": result})
+                return
+
+            yield _sse({"pct": 80, "op": "Обогащение картинок и характеристик…"})
+            try:
+                enrich = await enrich_missing_media(db, web_images=True, max_web=60)
+                notes.append(
+                    f"enrich: img {enrich.get('images_filled', 0)} / "
+                    f"specs {enrich.get('specs_filled', 0)} / "
+                    f"web {enrich.get('web_filled', 0)}"
+                )
+            except Exception as e:
+                notes.append(f"enrich: {e}")
+
+            result = {
+                "status": "credits_exhausted" if exhausted else "ok",
+                "message": f"Загружено: +{total_added}.",
+                "note": " · ".join(notes) if notes else None,
+                "components_added": total_added,
+                "categories_ready": total_categories,
+                "economy": economy,
+                "credits_exhausted": exhausted,
+            }
+            yield _sse({"pct": 100, "op": "Готово", "result": result})
+        except Exception as e:
+            yield _sse({
+                "pct": 100,
+                "op": "Ошибка",
+                "error": str(e),
+                "result": {
+                    "status": "error",
+                    "message": str(e),
+                    "components_added": total_added,
+                    "categories_ready": 0,
+                    "credits_exhausted": False,
+                },
+            })
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @app.get("/categories", response_model=list[schemas.Category])
 def list_categories(db: Session = Depends(get_db)):
