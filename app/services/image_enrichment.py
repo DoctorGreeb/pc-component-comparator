@@ -1,11 +1,11 @@
 """
-Поиск картинок:
-1) Google Custom Search (Images) — если заданы API key + CX (официальный API)
-2) DuckDuckGo Images — первая превьюшка без ключа
-3) Wikimedia Commons
-4) Openverse
-
-Прямой парсинг google.com/imghp не используем (ToS Google + CAPTCHA).
+Поиск картинок (цепочка):
+1) Google CSE Images (если key+cx)
+2) DuckDuckGo Images
+3) Bing Images (первая murl из выдачи)
+4) Wikipedia / Wikimedia pageimage
+5) Wikimedia Commons search
+6) Openverse
 """
 from __future__ import annotations
 
@@ -19,10 +19,12 @@ import httpx
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; PCComparator/0.4.6; "
-        "+https://github.com/DoctorGreeb/pc-component-comparator)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 "
+        "PCComparator/0.4.8"
     ),
     "Accept": "application/json, text/html, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
 
 _CACHE: dict[str, str | None] = {}
@@ -103,6 +105,20 @@ _DEFAULT_SVG = (
 )
 
 
+def is_placeholder_url(url: str | None) -> bool:
+    """SVG data-URI и пустые URL считаем «нет реальной картинки»."""
+    if not url:
+        return True
+    u = str(url).strip().lower()
+    if not u or u == "none":
+        return True
+    if u.startswith("data:image/svg"):
+        return True
+    if u.startswith("data:"):
+        return True
+    return False
+
+
 def placeholder_data_uri(category: str | None = None) -> str:
     svg = _PLACEHOLDER_SVG.get(category or "", _DEFAULT_SVG)
     return "data:image/svg+xml," + quote(svg)
@@ -132,7 +148,6 @@ async def search_google_cse(
     api_key: str | None = None,
     cx: str | None = None,
 ) -> str | None:
-    """Google Programmable Search — searchType=image, берём первый link."""
     key, eng = _google_creds(api_key, cx)
     if not key or not eng:
         return None
@@ -152,7 +167,6 @@ async def search_google_cse(
             return None
         data = resp.json()
         for item in data.get("items") or []:
-            # link — оригинал, image.thumbnailLink — превью
             link = item.get("link")
             thumb = (item.get("image") or {}).get("thumbnailLink")
             for candidate in (thumb, link):
@@ -164,12 +178,7 @@ async def search_google_cse(
 
 
 async def search_duckduckgo_images(client: httpx.AsyncClient, query: str) -> str | None:
-    """
-    Первая превьюшка из выдачи DuckDuckGo Images (без API-ключа).
-    Близкий UX к «первой картинке из поиска».
-    """
     try:
-        # 1) страница поиска — вытаскиваем vqd
         r = await client.get(
             "https://duckduckgo.com/",
             params={"q": query},
@@ -180,38 +189,84 @@ async def search_duckduckgo_images(client: httpx.AsyncClient, query: str) -> str
         html = r.text
         m = re.search(r"vqd=([\d-]+)", html)
         if not m:
-            m = re.search(r"vqd=\"([\d-]+)\"", html)
+            m = re.search(r'vqd="([\d-]+)"', html)
         if not m:
             m = re.search(r"vqd':\s*'([\d-]+)'", html)
         if not m:
             return None
         vqd = m.group(1)
-
-        # 2) JSON-лента картинок
         r2 = await client.get(
             "https://duckduckgo.com/i.js",
-            params={
-                "l": "ru-ru",
-                "o": "json",
-                "q": query,
-                "vqd": vqd,
-                "f": ",,,",
-                "p": "1",
-            },
+            params={"l": "ru-ru", "o": "json", "q": query, "vqd": vqd, "f": ",,,", "p": "1"},
             headers={**HEADERS, "Accept": "application/json", "Referer": "https://duckduckgo.com/"},
         )
         if r2.status_code != 200:
             return None
         data = r2.json()
-        results = data.get("results") or []
-        for item in results:
-            # thumbnail — превью, image — полное
+        for item in data.get("results") or []:
             for key in ("thumbnail", "image"):
                 url = item.get(key)
                 if url and str(url).startswith("http"):
                     return str(url)
     except Exception:
         return None
+    return None
+
+
+async def search_bing_images(client: httpx.AsyncClient, query: str) -> str | None:
+    """Первая murl из HTML выдачи Bing Images."""
+    try:
+        r = await client.get(
+            "https://www.bing.com/images/search",
+            params={"q": query, "form": "HDRSC2", "first": "1"},
+            headers={**HEADERS, "Accept": "text/html"},
+        )
+        if r.status_code != 200:
+            return None
+        html = r.text
+        # murl — оригинал картинки
+        for pattern in (
+            r'"murl"\s*:\s*"(https?://[^"\\]+)"',
+            r"&murl=(https?://[^&\"']+)",
+            r'murl":"(https?://[^&]+)"',
+        ):
+            for m in re.finditer(pattern, html):
+                url = unquote(m.group(1).replace("\\u0026", "&").replace("\\/", "/"))
+                if url.startswith("http") and not url.endswith(".svg"):
+                    return url
+        # turl — превью
+        m = re.search(r'"turl"\s*:\s*"(https?://[^"\\]+)"', html)
+        if m:
+            return m.group(1).replace("\\/", "/")
+    except Exception:
+        return None
+    return None
+
+
+async def search_wikipedia_image(client: httpx.AsyncClient, query: str) -> str | None:
+    """pageimage с Wikipedia (en/ru)."""
+    for lang in ("en", "ru"):
+        try:
+            params = {
+                "action": "query",
+                "format": "json",
+                "prop": "pageimages",
+                "piprop": "thumbnail",
+                "pithumbsize": "640",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrlimit": "5",
+            }
+            r = await client.get(f"https://{lang}.wikipedia.org/w/api.php", params=params)
+            if r.status_code != 200:
+                continue
+            pages = ((r.json().get("query") or {}).get("pages") or {})
+            for page in pages.values() if isinstance(pages, dict) else []:
+                thumb = (page.get("thumbnail") or {}).get("source")
+                if thumb and str(thumb).startswith("http"):
+                    return str(thumb)
+        except Exception:
+            continue
     return None
 
 
@@ -279,10 +334,6 @@ async def find_image_url(
     google_api_key: str | None = None,
     google_cx: str | None = None,
 ) -> tuple[str | None, ImageStatus, str | None]:
-    """
-    Ищем картинку. Возвращает (url, status, host).
-    Порядок: Google CSE → DuckDuckGo (первая превью) → Wikimedia → Openverse.
-    """
     q = _clean_query(name)
     if not q:
         return None, "not_found", None
@@ -320,14 +371,10 @@ async def find_image_url(
     q_full = f"{q} {cat_hint}"
 
     async def _search() -> tuple[str | None, str | None]:
-        # 1) Google Custom Search Images (если ключ)
-        url = await search_google_cse(
-            client, q_full, api_key=google_api_key, cx=google_cx
-        )
+        url = await search_google_cse(client, q_full, api_key=google_api_key, cx=google_cx)
         if url:
             return url, "google"
 
-        # 2) DuckDuckGo — первая превьюшка без ключа
         url = await search_duckduckgo_images(client, q_full)
         if url:
             return url, "duckduckgo"
@@ -335,12 +382,21 @@ async def find_image_url(
         if url:
             return url, "duckduckgo"
 
-        # 3) Wikimedia
+        url = await search_bing_images(client, q_full)
+        if url:
+            return url, "bing"
+        url = await search_bing_images(client, q)
+        if url:
+            return url, "bing"
+
+        url = await search_wikipedia_image(client, q)
+        if url:
+            return url, "wikipedia"
+
         url = await search_wikimedia(client, q)
         if url:
             return url, "wikimedia"
 
-        # 4) Openverse
         url = await search_openverse(client, q_full)
         if url:
             return url, "openverse"
