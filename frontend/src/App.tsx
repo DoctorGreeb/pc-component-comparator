@@ -253,7 +253,7 @@ function App() {
                 <span className="progress-pct">{Math.round(progressPct)}%</span>
               </div>
               {settings.showSyncLogs && (
-                <details className="sync-log" open>
+                <details className="sync-log">
                   <summary>Подробный журнал синхронизации <span>{syncLogs.length} событий</span></summary>
                   <div className="sync-log-list">
                     {syncLogs.length === 0 ? <div className="sync-log-empty">Ожидание событий от сервера…</div> : syncLogs.map((line, index) => <div className="sync-log-line" key={index}>{line}</div>)}
