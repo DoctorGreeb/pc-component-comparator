@@ -1,12 +1,18 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from typing import Optional
 import json
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from app.database import engine, get_db, Base
 from app import models, schemas
+from app.services.dns_loader import load_dns_catalog, get_api_key
 
 # Create tables (no initial data)
 Base.metadata.create_all(bind=engine)
@@ -46,31 +52,31 @@ DEFAULT_STORES = [
 
 @app.get("/")
 def root():
+    has_key = bool(get_api_key())
     return {
         "message": "PC Component Comparator API",
         "status": "ready",
-        "note": "База данных пуста. Используйте POST /update-database для подготовки и наполнения.",
+        "reefapi_configured": has_key,
+        "note": "Используйте POST /update-database для загрузки реальных товаров из DNS.",
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "reefapi_configured": bool(get_api_key())}
 
 
 @app.post("/update-database", response_model=schemas.UpdateDatabaseResponse)
-def update_database(db: Session = Depends(get_db)):
+async def update_database(db: Session = Depends(get_db)):
     """
-    Кнопка обновления базы.
-    Создаёт базовые категории и магазины.
-    Загрузка реальных товаров будет добавлена после подключения API-ключей.
+    Обновление базы:
+    1) создаёт категории и магазины (если ещё нет)
+    2) загружает реальные товары из DNS через ReefAPI
     """
-    categories_ready = 0
     for cat in DEFAULT_CATEGORIES:
         existing = db.query(models.Category).filter(models.Category.name == cat["name"]).first()
         if not existing:
             db.add(models.Category(**cat))
-            categories_ready += 1
 
     for store in DEFAULT_STORES:
         existing = db.query(models.Store).filter(models.Store.name == store["name"]).first()
@@ -81,11 +87,25 @@ def update_database(db: Session = Depends(get_db)):
 
     total_categories = db.query(models.Category).count()
 
+    if not get_api_key():
+        return schemas.UpdateDatabaseResponse(
+            status="partial",
+            message="Категории и магазины готовы. REEFAPI_KEY не задан — товары не загружены.",
+            note="Создайте файл .env с REEFAPI_KEY=...",
+            components_added=0,
+            categories_ready=total_categories,
+        )
+
+    try:
+        stats = await load_dns_catalog(db, max_per_query=10)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка загрузки DNS: {e}")
+
     return schemas.UpdateDatabaseResponse(
-        status="accepted",
-        message="Категории и магазины подготовлены. Загрузка товаров требует API-ключ (ReefAPI и т.п.).",
-        note="Начальное наполнение товарами отсутствует по требованию.",
-        components_added=0,
+        status="ok",
+        message=f"Загружено реальных товаров из DNS: добавлено {stats['components_added']}.",
+        note=f"Запросов успешно: {stats['queries_ok']}, ошибок: {stats['errors']}",
+        components_added=stats["components_added"],
         categories_ready=total_categories,
     )
 
@@ -103,7 +123,9 @@ def list_components(
     limit: int = Query(50, le=100),
     db: Session = Depends(get_db),
 ):
-    query = db.query(models.Component).options(joinedload(models.Component.category), joinedload(models.Component.prices))
+    query = db.query(models.Component).options(
+        joinedload(models.Component.category), joinedload(models.Component.prices)
+    )
 
     if category:
         query = query.join(models.Category).filter(models.Category.name == category)
@@ -145,13 +167,15 @@ def list_components(
 def get_component(component_id: int, db: Session = Depends(get_db)):
     component = (
         db.query(models.Component)
-        .options(joinedload(models.Component.category), joinedload(models.Component.prices).joinedload(models.Price.store))
+        .options(
+            joinedload(models.Component.category),
+            joinedload(models.Component.prices).joinedload(models.Price.store),
+        )
         .filter(models.Component.id == component_id)
         .first()
     )
     if not component:
         raise HTTPException(status_code=404, detail="Компонент не найден")
-    # Parse specs if stored as string
     if isinstance(component.specs, str):
         try:
             component.specs = json.loads(component.specs)
@@ -181,7 +205,10 @@ def compare_components(
 
     components = (
         db.query(models.Component)
-        .options(joinedload(models.Component.category), joinedload(models.Component.prices).joinedload(models.Price.store))
+        .options(
+            joinedload(models.Component.category),
+            joinedload(models.Component.prices).joinedload(models.Price.store),
+        )
         .filter(models.Component.id.in_(id_list))
         .all()
     )
