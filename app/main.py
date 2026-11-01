@@ -75,7 +75,7 @@ def _match_priority_key(actual_key, priority):
     return None
 
 def _component_to_list_item(c):
-    prices = [p for p in c.prices if p.price is not None]
+    prices = [p for p in c.prices if p.price is not None and p.in_stock]
     min_p = min((p.price for p in prices), default=None)
     old_p = product_url = None
     if prices:
@@ -347,7 +347,7 @@ def get_facets(category: Optional[str] = Query(None), db: Session = Depends(get_
     for c in components:
         if c.brand: brand_counts[c.brand] += 1
         for p in c.prices:
-            if p.price is not None: prices.append(p.price)
+            if p.price is not None and p.in_stock: prices.append(p.price)
         for key, val in _parse_specs(c.specs).items():
             if not val or key in blocked: continue
             key_freq[key] += 1; spec_counts[key][str(val)] += 1
@@ -402,7 +402,7 @@ def export_catalog(db: Session = Depends(get_db)):
     components = db.query(models.Component).options(joinedload(models.Component.category), joinedload(models.Component.prices).joinedload(models.Price.store)).all()
     items = []
     for c in components:
-        prices = [p for p in c.prices if p.price is not None]
+        prices = [p for p in c.prices if p.price is not None and p.in_stock]
         best = min(prices, key=lambda p: p.price) if prices else None
         items.append({"category": c.category.name if c.category else "cpu", "name": c.name, "brand": c.brand, "description": c.description, "image_url": c.image_url, "specs": _parse_specs(c.specs), "price": best.price if best else None, "old_price": best.old_price if best else None, "product_url": best.product_url if best else None, "external_id": best.external_id if best else None, "store": best.store.name if best and best.store else "DNS"})
     return {"count": len(items), "items": items}
