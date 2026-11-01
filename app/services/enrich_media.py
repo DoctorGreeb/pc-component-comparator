@@ -69,12 +69,14 @@ async def enrich_missing_media(
     web_images: bool = True,
     max_web: int = 80,
     image_timeout_sec: float = 15.0,
+    google_api_key: str | None = None,
+    google_cx: str | None = None,
     on_progress=None,
 ) -> dict[str, int]:
     """
-    1) Доноры в той же категории (free ↔ API): картинки и спеки.
-    2) Без картинки — Wikimedia / Openverse (с таймаутом).
-    3) Иначе SVG-заглушка.
+    1) Доноры в той же категории.
+    2) Google CSE / DuckDuckGo / Wikimedia / Openverse.
+    3) SVG-заглушка.
     """
 
     async def _prog(msg: str, pct: float | None = None):
@@ -146,13 +148,14 @@ async def enrich_missing_media(
     if web_images:
         need = [c for c in db.query(models.Component).all() if not c.image_url][:max_web]
         timeout = max(1.0, min(99.0, float(image_timeout_sec or 15)))
+        src_note = "Google CSE + DDG" if google_api_key else "DuckDuckGo + Wikimedia"
         await _prog(
-            f"Поиск картинок в интернете: {len(need)} товаров (таймаут {int(timeout)} с на товар)…"
+            f"Поиск картинок ({src_note}): {len(need)} товаров, таймаут {int(timeout)} с…"
         )
         async with httpx.AsyncClient(
             timeout=min(timeout + 2, 25.0),
             headers={
-                "User-Agent": "PCComparator/0.4.5 (+https://github.com/DoctorGreeb/pc-component-comparator)",
+                "User-Agent": "PCComparator/0.4.6 (+https://github.com/DoctorGreeb/pc-component-comparator)",
                 "Accept": "application/json",
             },
             follow_redirects=True,
@@ -167,6 +170,8 @@ async def enrich_missing_media(
                         category=cat_name,
                         client=client,
                         timeout_sec=timeout,
+                        google_api_key=google_api_key,
+                        google_cx=google_cx,
                     )
                 except Exception:
                     url, status, host = None, "error", None
