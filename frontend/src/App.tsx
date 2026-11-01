@@ -3,6 +3,7 @@ import { Routes, Route, Link, useNavigate } from 'react-router-dom'
 import { CatalogPage } from './pages/CatalogPage'
 import { ComparePage } from './pages/ComparePage'
 import { ConfiguratorPage } from './pages/ConfiguratorPage'
+import { ProductPage } from './pages/ProductPage'
 import { updateDatabaseWithProgress, exportCatalog, importCatalogWithProgress } from './api'
 import {
   AppSettings,
@@ -266,6 +267,7 @@ function App() {
           <Route path="/" element={<CatalogPage selected={selected} onToggle={toggleSelect} />} />
           <Route path="/compare" element={<ComparePage />} />
           <Route path="/configurator" element={<ConfiguratorPage />} />
+          <Route path="/product/:id" element={<ProductPage />} />
         </Routes>
       </main>
 
