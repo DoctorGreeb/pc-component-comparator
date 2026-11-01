@@ -1,10 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from typing import Optional
 import json
-import os
 
 from dotenv import load_dotenv
 
@@ -14,7 +13,6 @@ from app.database import engine, get_db, Base
 from app import models, schemas
 from app.services.dns_loader import load_dns_catalog, get_api_key
 
-# Create tables (no initial data)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -52,26 +50,27 @@ DEFAULT_STORES = [
 
 @app.get("/")
 def root():
-    has_key = bool(get_api_key())
     return {
         "message": "PC Component Comparator API",
         "status": "ready",
-        "reefapi_configured": has_key,
-        "note": "Используйте POST /update-database для загрузки реальных товаров из DNS.",
+        "note": "Передайте api_key в POST /update-database или задайте REEFAPI_KEY в .env",
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "reefapi_configured": bool(get_api_key())}
+    return {"status": "ok"}
 
 
 @app.post("/update-database", response_model=schemas.UpdateDatabaseResponse)
-async def update_database(db: Session = Depends(get_db)):
+async def update_database(
+    body: Optional[schemas.UpdateDatabaseRequest] = Body(None),
+    db: Session = Depends(get_db),
+):
     """
     Обновление базы:
-    1) создаёт категории и магазины (если ещё нет)
-    2) загружает реальные товары из DNS через ReefAPI
+    1) создаёт категории и магазины
+    2) загружает реальные товары из DNS (ключ из body.api_key или .env)
     """
     for cat in DEFAULT_CATEGORIES:
         existing = db.query(models.Category).filter(models.Category.name == cat["name"]).first()
@@ -84,20 +83,20 @@ async def update_database(db: Session = Depends(get_db)):
             db.add(models.Store(**store))
 
     db.commit()
-
     total_categories = db.query(models.Category).count()
 
-    if not get_api_key():
+    api_key = (body.api_key if body else None) or None
+    if not get_api_key(api_key):
         return schemas.UpdateDatabaseResponse(
             status="partial",
-            message="Категории и магазины готовы. REEFAPI_KEY не задан — товары не загружены.",
-            note="Создайте файл .env с REEFAPI_KEY=...",
+            message="Категории и магазины готовы. API-ключ не указан — товары не загружены.",
+            note="Введите ключ ReefAPI на сайте и нажмите «Применить», затем «Обновить базу».",
             components_added=0,
             categories_ready=total_categories,
         )
 
     try:
-        stats = await load_dns_catalog(db, max_per_query=10)
+        stats = await load_dns_catalog(db, max_per_query=10, api_key=api_key)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ошибка загрузки DNS: {e}")
 
@@ -189,10 +188,6 @@ def compare_components(
     ids: str = Query(..., description="Список id через запятую, например 1,2,3"),
     db: Session = Depends(get_db),
 ):
-    """
-    Сравнение компонентов. Все должны быть одной категории.
-    Максимум 4 позиции.
-    """
     try:
         id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
     except ValueError:
