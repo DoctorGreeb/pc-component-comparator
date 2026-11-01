@@ -22,11 +22,10 @@ const SLOTS: { key: string; label: string; required?: boolean }[] = [
   { key: 'case', label: 'Корпус' },
 ]
 
-/** Ключи характеристик для сортировки/фильтра по категории */
 const SPEC_SORT_KEYS: Record<string, { key: string; labels: string[] }[]> = {
   cpu: [
     { key: 'socket', labels: ['Сокет', 'Socket'] },
-    { key: 'cores', labels: ['Общее количество ядер', 'Количество ядер', 'Cores'] },
+    { key: 'cores', labels: ['Общее количество ядер', 'Количество ядер', 'Cores', 'Ядра'] },
     { key: 'freq', labels: ['Максимальная частота', 'Базовая частота', 'Boost'] },
     { key: 'tdp', labels: ['Тепловыделение', 'TDP'] },
   ],
@@ -59,6 +58,19 @@ const SPEC_SORT_KEYS: Record<string, { key: string; labels: string[] }[]> = {
     { key: 'socket', labels: ['Сокет', 'Socket'] },
     { key: 'tdp', labels: ['TDP', 'Тепловыделение'] },
   ],
+}
+
+/** Короткие подписи в строке списка */
+const ROW_SPEC_LABELS: Record<string, string[]> = {
+  cpu: ['Сокет', 'Общее количество ядер', 'Количество ядер', 'Максимальная частота', 'Тепловыделение'],
+  motherboard: ['Сокет', 'Чипсет', 'Тип памяти', 'Форм-фактор'],
+  ram: ['Тип памяти', 'Суммарный объем', 'Объем', 'Тактовая частота'],
+  gpu: ['Графический чип', 'Графический процессор', 'Объем видеопамяти'],
+  ssd: ['Объем', 'Интерфейс', 'Тип'],
+  hdd: ['Объем', 'Скорость вращения'],
+  psu: ['Мощность', 'Сертификат 80 PLUS'],
+  case: ['Форм-фактор', 'Цвет'],
+  cooler: ['Тип', 'TDP', 'Сокет'],
 }
 
 type BuildMap = Record<string, ComponentListItem | null>
@@ -96,16 +108,44 @@ function specVal(item: ComponentListItem | null | undefined, labels: string[]): 
   return ''
 }
 
+/** Все непустые specs в стабильном порядке приоритета */
+function rowSpecsLine(item: ComponentListItem, slotKey: string): string {
+  const preferred = ROW_SPEC_LABELS[slotKey] || []
+  const parts: string[] = []
+  const used = new Set<string>()
+  for (const lab of preferred) {
+    const v = specVal(item, [lab])
+    if (v && !used.has(v)) {
+      parts.push(v)
+      used.add(v)
+    }
+  }
+  if (parts.length < 2 && item.specs) {
+    for (const [k, v] of Object.entries(item.specs)) {
+      if (!v) continue
+      const s = String(v)
+      if (used.has(s)) continue
+      parts.push(`${k}: ${s}`)
+      used.add(s)
+      if (parts.length >= 4) break
+    }
+  }
+  return parts.slice(0, 4).join(' · ')
+}
+
 function normalizeSocket(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/socket/gi, '')
-    .replace(/сокет/gi, '')
-    .replace(/\s+/g, '')
-    .replace(/am5/g, 'am5')
-    .replace(/am4/g, 'am4')
-    .replace(/lga(\d+)/g, 'lga$1')
-    .trim()
+  let s = raw.toLowerCase()
+  s = s.replace(/socket|сокет/gi, '')
+  s = s.replace(/\s+/g, '')
+  // AM4 / AM5 / LGA1700 / LGA1200 / sTRX4 …
+  const m =
+    s.match(/am\d+/i) ||
+    s.match(/lga\d+/i) ||
+    s.match(/strx\d+/i) ||
+    s.match(/trx\d+/i) ||
+    s.match(/fm\d+/i)
+  if (m) return m[0].toLowerCase()
+  return s.trim()
 }
 
 function extractDdr(raw: string): string {
@@ -114,7 +154,8 @@ function extractDdr(raw: string): string {
 }
 
 function socketsMatch(a: string, b: string): boolean {
-  if (!a || !b) return true // нет данных — не режем список
+  // мягко: нет данных → совместимо
+  if (!a?.trim() || !b?.trim()) return true
   const na = normalizeSocket(a)
   const nb = normalizeSocket(b)
   if (!na || !nb) return true
@@ -122,9 +163,10 @@ function socketsMatch(a: string, b: string): boolean {
 }
 
 function ddrMatch(a: string, b: string): boolean {
-  if (!a || !b) return true
+  if (!a?.trim() || !b?.trim()) return true
   const da = extractDdr(a)
   const db = extractDdr(b)
+  // если DDR не извлекли — не режем
   if (!da || !db) return true
   return da === db
 }
@@ -137,7 +179,10 @@ function itemMemType(item: ComponentListItem): string {
   return specVal(item, ['Тип памяти', 'Memory Type', 'DDR'])
 }
 
-/** Фильтр совместимости с уже выбранными слотами (порядок не важен) */
+/**
+ * Совместимость только при явном конфликте известных значений.
+ * Нет сокета/DDR в спеках → позиция остаётся в списке.
+ */
 function isCompatibleWithBuild(
   slotKey: string,
   item: ComponentListItem,
@@ -149,29 +194,47 @@ function isCompatibleWithBuild(
 
   if (slotKey === 'cpu') {
     if (mb) {
-      if (!socketsMatch(itemSocket(item), itemSocket(mb))) return false
+      const a = itemSocket(item)
+      const b = itemSocket(mb)
+      if (a && b && !socketsMatch(a, b)) return false
     }
-    // cooler with socket list — soft
     return true
   }
 
   if (slotKey === 'motherboard') {
-    if (cpu && !socketsMatch(itemSocket(item), itemSocket(cpu))) return false
-    if (ram && !ddrMatch(itemMemType(item), itemMemType(ram))) return false
+    if (cpu) {
+      const a = itemSocket(item)
+      const b = itemSocket(cpu)
+      if (a && b && !socketsMatch(a, b)) return false
+    }
+    if (ram) {
+      const a = itemMemType(item)
+      const b = itemMemType(ram)
+      if (a && b && !ddrMatch(a, b)) return false
+    }
     return true
   }
 
   if (slotKey === 'ram') {
-    if (mb && !ddrMatch(itemMemType(item), itemMemType(mb))) return false
+    if (mb) {
+      const a = itemMemType(item)
+      const b = itemMemType(mb)
+      if (a && b && !ddrMatch(a, b)) return false
+    }
     return true
   }
 
   if (slotKey === 'cooler') {
-    // если у кулера указан сокет — сверяем с CPU/MB
     const coolSock = itemSocket(item)
     if (coolSock) {
-      if (cpu && !socketsMatch(coolSock, itemSocket(cpu))) return false
-      if (mb && !socketsMatch(coolSock, itemSocket(mb))) return false
+      if (cpu) {
+        const b = itemSocket(cpu)
+        if (b && !socketsMatch(coolSock, b)) return false
+      }
+      if (mb) {
+        const b = itemSocket(mb)
+        if (b && !socketsMatch(coolSock, b)) return false
+      }
     }
     return true
   }
@@ -241,7 +304,6 @@ function sortItems(items: ComponentListItem[], sort: SpecSort, slotKey: string):
   return arr
 }
 
-/** Уникальные значения характеристики среди списка (для фильтра) */
 function facetValues(items: ComponentListItem[], labels: string[]): string[] {
   const set = new Map<string, number>()
   for (const it of items) {
@@ -252,20 +314,49 @@ function facetValues(items: ComponentListItem[], labels: string[]): string[] {
   return [...set.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'))
     .map(([v]) => v)
-    .slice(0, 30)
+    .slice(0, 40)
+}
+
+/** Загрузить ВСЕ страницы категории */
+async function fetchAllInCategory(category: string): Promise<ComponentListItem[]> {
+  const pageSize = 120
+  let skip = 0
+  let total = Infinity
+  const all: ComponentListItem[] = []
+  const seen = new Set<number>()
+
+  while (skip < total && skip < 5000) {
+    const page = await fetchComponents({
+      category,
+      limit: pageSize,
+      skip,
+      sort: 'price_asc',
+    })
+    total = page.total
+    for (const it of page.items) {
+      if (!seen.has(it.id)) {
+        seen.add(it.id)
+        all.push(it)
+      }
+    }
+    if (page.items.length === 0) break
+    skip += page.items.length
+    if (skip >= total) break
+  }
+  return all
 }
 
 export function ConfiguratorPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [build, setBuild] = useState<BuildMap>(() => loadBuild())
   const [activeSlot, setActiveSlot] = useState<string | null>(null)
-  /** Полный список категории из API */
   const [rawItems, setRawItems] = useState<ComponentListItem[]>([])
   const [pickerQ, setPickerQ] = useState('')
   const [pickerLoading, setPickerLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [sort, setSort] = useState<SpecSort>('price_asc')
-  /** Фильтры по характеристикам: key -> value */
   const [specFilters, setSpecFilters] = useState<Record<string, string>>({})
+  const [compatOnly, setCompatOnly] = useState(true)
 
   useEffect(() => {
     void fetchCategories().then(setCategories).catch(() => {})
@@ -284,16 +375,16 @@ export function ConfiguratorPage() {
 
   const loadSlot = useCallback(async (slotKey: string) => {
     setPickerLoading(true)
+    setLoadError(null)
     try {
-      // тянем максимум из базы категории
-      const page = await fetchComponents({
-        category: slotKey,
-        limit: 120,
-        sort: 'price_asc',
-      })
-      setRawItems(page.items)
-    } catch {
+      const items = await fetchAllInCategory(slotKey)
+      setRawItems(items)
+      if (items.length === 0) {
+        setLoadError('В базе нет товаров этой категории. Обновите базу.')
+      }
+    } catch (e) {
       setRawItems([])
+      setLoadError(e instanceof Error ? e.message : 'Ошибка загрузки')
     } finally {
       setPickerLoading(false)
     }
@@ -305,28 +396,36 @@ export function ConfiguratorPage() {
       setPickerQ('')
       setSpecFilters({})
       setSort('price_asc')
+      setCompatOnly(true)
       await loadSlot(slotKey)
     },
     [loadSlot],
   )
 
-  /** Совместимые с текущей сборкой */
   const compatibleItems = useMemo(() => {
     if (!activeSlot) return []
+    if (!compatOnly) return rawItems
     return rawItems.filter((it) => isCompatibleWithBuild(activeSlot, it, build))
-  }, [rawItems, activeSlot, build])
+  }, [rawItems, activeSlot, build, compatOnly])
 
-  /** Поиск + фильтры по характеристикам (по уже совместимым) */
   const filteredItems = useMemo(() => {
     let list = compatibleItems
     const q = pickerQ.trim().toLowerCase()
     if (q) {
-      list = list.filter(
-        (it) =>
-          (it.name || '').toLowerCase().includes(q) ||
-          (it.brand || '').toLowerCase().includes(q) ||
-          (it.model || '').toLowerCase().includes(q),
-      )
+      list = list.filter((it) => {
+        const blob = [
+          it.name,
+          it.brand,
+          it.model,
+          it.description,
+          rowSpecsLine(it, activeSlot || ''),
+          ...(it.specs ? Object.values(it.specs) : []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        return blob.includes(q)
+      })
     }
     if (activeSlot) {
       for (const [sk, val] of Object.entries(specFilters)) {
@@ -344,18 +443,8 @@ export function ConfiguratorPage() {
 
   const compatNote = useMemo(() => {
     if (!activeSlot) return null
-    const parts: string[] = []
-    if (activeSlot === 'motherboard' || activeSlot === 'cpu' || activeSlot === 'cooler') {
-      if (build.cpu) parts.push(`сокет CPU: ${itemSocket(build.cpu) || '—'}`)
-      if (build.motherboard) parts.push(`сокет MB: ${itemSocket(build.motherboard) || '—'}`)
-    }
-    if (activeSlot === 'motherboard' || activeSlot === 'ram') {
-      if (build.ram) parts.push(`память: ${itemMemType(build.ram) || '—'}`)
-      if (build.motherboard) parts.push(`слоты MB: ${itemMemType(build.motherboard) || '—'}`)
-    }
-    if (!parts.length) return null
-    return `Фильтр совместимости: ${parts.join(' · ')} · показано ${compatibleItems.length} из ${rawItems.length}`
-  }, [activeSlot, build, compatibleItems.length, rawItems.length])
+    return `В категории ${rawItems.length} шт. · после совместимости ${compatibleItems.length} · в списке ${filteredItems.length}`
+  }, [activeSlot, rawItems.length, compatibleItems.length, filteredItems.length])
 
   const selectPart = (item: ComponentListItem) => {
     if (!activeSlot) return
@@ -391,8 +480,8 @@ export function ConfiguratorPage() {
         <div>
           <h1>Конфигуратор ПК</h1>
           <p className="cfg-sub">
-            Совместимость по сокету и типу памяти учитывается в любую сторону: можно начать с
-            оперативки — платы отфильтруются под DDR, и наоборот.
+            Список подгружает всю категорию из базы. Совместимость режет только при явном
+            конфликте сокета/DDR; товары без этих полей в спеках остаются видимыми.
           </p>
         </div>
         <div className="cfg-summary">
@@ -436,6 +525,7 @@ export function ConfiguratorPage() {
                   )}
                   <div className="cfg-slot-meta">
                     <div className="cfg-name">{item.name}</div>
+                    <div className="cfg-row-specs">{rowSpecsLine(item, slot.key)}</div>
                     <div className="cfg-price">{formatPrice(item.min_price)}</div>
                   </div>
                   <div className="cfg-slot-actions">
@@ -480,11 +570,12 @@ export function ConfiguratorPage() {
             </div>
 
             {compatNote && <div className="cfg-compat-note">{compatNote}</div>}
+            {loadError && <div className="cfg-load-error">{loadError}</div>}
 
             <div className="cfg-picker-filters">
               <input
                 type="search"
-                placeholder="Поиск по названию…"
+                placeholder="Поиск по названию и характеристикам…"
                 value={pickerQ}
                 onChange={(e) => setPickerQ(e.target.value)}
                 autoFocus
@@ -498,7 +589,17 @@ export function ConfiguratorPage() {
               </select>
             </div>
 
-            {/* Фильтры по характеристикам среди совместимых */}
+            <div className="cfg-compat-toggle">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={compatOnly}
+                  onChange={(e) => setCompatOnly(e.target.checked)}
+                />
+                Только совместимые с выбранными слотами
+              </label>
+            </div>
+
             <div className="cfg-spec-filters">
               {(SPEC_SORT_KEYS[activeSlot] || []).map((s) => {
                 const values = facetValues(compatibleItems, s.labels)
@@ -528,12 +629,14 @@ export function ConfiguratorPage() {
             </div>
 
             <div className="cfg-picker-list">
-              {pickerLoading && <div className="cfg-empty">Загрузка каталога…</div>}
+              {pickerLoading && <div className="cfg-empty">Загрузка всей категории…</div>}
               {!pickerLoading && filteredItems.length === 0 && (
                 <div className="cfg-empty">
-                  {compatibleItems.length === 0 && rawItems.length > 0
-                    ? 'Нет совместимых позиций с текущей сборкой. Снимите конфликтующий слот или обновите базу.'
-                    : 'Нет товаров. Обновите базу или измените поиск.'}
+                  {rawItems.length === 0
+                    ? 'В базе пусто по этой категории. Обновите базу.'
+                    : compatibleItems.length === 0 && compatOnly
+                      ? 'Фильтр совместимости отсёк всё. Снимите галочку «Только совместимые» или очистите конфликтующий слот.'
+                      : 'Ничего не найдено по поиску/фильтрам. Очистите строку поиска.'}
                 </div>
               )}
               {!pickerLoading &&
@@ -551,11 +654,8 @@ export function ConfiguratorPage() {
                     )}
                     <div className="cfg-picker-meta">
                       <div className="cfg-name">{item.name}</div>
-                      <div className="cfg-brand">
-                        {[item.brand, itemSocket(item) || itemMemType(item)]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </div>
+                      <div className="cfg-row-specs">{rowSpecsLine(item, activeSlot)}</div>
+                      {item.brand && <div className="cfg-brand">{item.brand}</div>}
                     </div>
                     <div className="cfg-price">{formatPrice(item.min_price)}</div>
                   </button>
