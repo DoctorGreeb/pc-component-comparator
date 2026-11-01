@@ -1,7 +1,30 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { fetchCompare, ComponentDetail } from '../api'
+import { fetchCompare, ComponentDetail, formatPrice } from '../api'
 import './ComparePage.css'
+
+function getMinPrice(c: ComponentDetail): number | null {
+  const prices = c.prices.map((p) => p.price).filter((p): p is number => p != null)
+  return prices.length ? Math.min(...prices) : null
+}
+
+function getOldPrice(c: ComponentDetail): number | null {
+  const withPrice = c.prices.filter((p) => p.price != null)
+  if (!withPrice.length) return null
+  const best = withPrice.reduce((a, b) => ((a.price ?? 0) <= (b.price ?? 0) ? a : b))
+  return best.old_price
+}
+
+function getProductUrl(c: ComponentDetail): string | null {
+  const withUrl = c.prices.find((p) => p.product_url)
+  return withUrl?.product_url || null
+}
+
+function specVal(c: ComponentDetail, key: string): string {
+  const specs = c.specs && typeof c.specs === 'object' ? (c.specs as Record<string, unknown>) : {}
+  const v = specs[key]
+  return v != null && v !== '' ? String(v) : '—'
+}
 
 export function ComparePage() {
   const [params] = useSearchParams()
@@ -9,10 +32,12 @@ export function ComparePage() {
   const [data, setData] = useState<{
     category: string | null
     category_ru: string | null
+    spec_keys: string[]
     components: ComponentDetail[]
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [onlyDiff, setOnlyDiff] = useState(false)
 
   useEffect(() => {
     const ids = idsParam
@@ -33,6 +58,17 @@ export function ComparePage() {
       .finally(() => setLoading(false))
   }, [idsParam])
 
+  const diffKeys = useMemo(() => {
+    if (!data) return new Set<string>()
+    const set = new Set<string>()
+    for (const key of data.spec_keys) {
+      const values = data.components.map((c) => specVal(c, key))
+      if (new Set(values).size > 1) set.add(key)
+    }
+    // цена всегда «различающаяся» строка для подсветки если цены разные
+    return set
+  }, [data])
+
   if (loading) {
     return <div className="compare-message">Загрузка сравнения…</div>
   }
@@ -49,32 +85,42 @@ export function ComparePage() {
   }
 
   const components = data.components
+  const keys = onlyDiff
+    ? data.spec_keys.filter((k) => diffKeys.has(k))
+    : data.spec_keys
 
-  // Collect all unique spec keys
-  const allKeys = new Set<string>()
-  components.forEach((c) => {
-    if (c.specs && typeof c.specs === 'object') {
-      Object.keys(c.specs).forEach((k) => allKeys.add(k))
-    }
-  })
-  const specKeys = Array.from(allKeys).sort()
+  const prices = components.map(getMinPrice)
+  const priceDiff = new Set(prices.map((p) => p ?? -1)).size > 1
 
   return (
     <div className="compare">
       <div className="compare-header">
-        <Link to="/" className="back-link">
-          ← Каталог
-        </Link>
-        <h1>
-          Сравнение: {data.category_ru || data.category || 'компоненты'}
-        </h1>
+        <div>
+          <Link to="/" className="back-link">
+            ← Каталог
+          </Link>
+          <h1>
+            Сравнение: {data.category_ru || data.category || 'компоненты'}
+          </h1>
+          <p className="compare-sub">
+            {components.length} позиций · характеристики из DNS
+          </p>
+        </div>
+        <label className="only-diff">
+          <input
+            type="checkbox"
+            checked={onlyDiff}
+            onChange={(e) => setOnlyDiff(e.target.checked)}
+          />
+          Только отличия
+        </label>
       </div>
 
       <div className="table-wrap">
         <table className="compare-table">
           <thead>
             <tr>
-              <th className="label-col">Параметр</th>
+              <th className="label-col sticky-col">Параметр</th>
               {components.map((c) => (
                 <th key={c.id}>
                   <div className="comp-head">
@@ -83,52 +129,59 @@ export function ComparePage() {
                     )}
                     <div className="comp-name">{c.name}</div>
                     {c.brand && <div className="comp-brand">{c.brand}</div>}
+                    {getProductUrl(c) && (
+                      <a
+                        className="comp-link"
+                        href={getProductUrl(c)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Открыть в DNS ↗
+                      </a>
+                    )}
                   </div>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td className="label-col">Цена (мин.)</td>
+            <tr className={priceDiff ? 'row-diff' : ''}>
+              <td className="label-col sticky-col">Цена</td>
               {components.map((c) => {
-                const prices = c.prices
-                  .map((p) => p.price)
-                  .filter((p): p is number => p != null)
-                const min = prices.length ? Math.min(...prices) : null
+                const p = getMinPrice(c)
+                const old = getOldPrice(c)
                 return (
-                  <td key={c.id}>
-                    {min != null ? `${min.toLocaleString('ru-RU')} ₽` : '—'}
+                  <td key={c.id} className="price-cell">
+                    <span className="cmp-price">{formatPrice(p)}</span>
+                    {old != null && p != null && old > p && (
+                      <span className="cmp-old">{formatPrice(old)}</span>
+                    )}
                   </td>
                 )
               })}
             </tr>
-            <tr>
-              <td className="label-col">Наличие</td>
-              {components.map((c) => (
-                <td key={c.id}>
-                  {c.prices.some((p) => p.in_stock) ? 'В наличии' : 'Нет'}
-                </td>
-              ))}
-            </tr>
-            {specKeys.map((key) => (
-              <tr key={key}>
-                <td className="label-col">{key}</td>
-                {components.map((c) => {
-                  const specs = c.specs && typeof c.specs === 'object' ? c.specs : {}
-                  const val = (specs as Record<string, unknown>)[key]
-                  return (
-                    <td key={c.id}>
-                      {val != null && val !== '' ? String(val) : '—'}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-            {specKeys.length === 0 && (
+
+            {c.descriptionRow(components)}
+
+            {keys.map((key) => {
+              const isDiff = diffKeys.has(key)
+              if (onlyDiff && !isDiff) return null
+              return (
+                <tr key={key} className={isDiff ? 'row-diff' : ''}>
+                  <td className="label-col sticky-col">{key}</td>
+                  {components.map((c) => (
+                    <td key={c.id}>{specVal(c, key)}</td>
+                  ))}
+                </tr>
+              )
+            })}
+
+            {keys.length === 0 && (
               <tr>
                 <td className="label-col" colSpan={components.length + 1}>
-                  Характеристики пока не загружены (база пуста)
+                  {onlyDiff
+                    ? 'Все характеристики совпадают'
+                    : 'Характеристики пока не загружены — обновите базу'}
                 </td>
               </tr>
             )}
@@ -137,4 +190,21 @@ export function ComparePage() {
       </div>
     </div>
   )
+}
+
+function c = {
+  descriptionRow(components: ComponentDetail[]) {
+    const has = components.some((x) => x.description)
+    if (!has) return null
+    return (
+      <tr>
+        <td className="label-col sticky-col">Кратко</td>
+        {components.map((c) => (
+          <td key={c.id} className="desc-cell">
+            {c.description || '—'}
+          </td>
+        ))}
+      </tr>
+    )
+  },
 }
