@@ -16,7 +16,7 @@ router = APIRouter()
 def _normalized_name(value: str) -> str:
     value = (value or "").lower()
     value = re.sub(r"[^a-zа-яё0-9]+", " ", value)
-    return re.sub(r"\\s+", " ", value).strip()
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _is_same_product(expected: str, candidate: str) -> bool:
