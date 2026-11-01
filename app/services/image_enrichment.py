@@ -3,25 +3,26 @@
 1) Wikimedia Commons (MediaWiki API)
 2) Openverse (Creative Commons / openverse.org)
 
-Используется, когда у товара нет image_url и нет донора в БД.
+Поддерживает лимит времени на один товар (timeout_sec).
 """
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Any
+from typing import Literal
 from urllib.parse import quote
 
 import httpx
 
 HEADERS = {
-    "User-Agent": "PCComparator/0.4.3 (https://github.com/DoctorGreeb/pc-component-comparator; contact via github)",
+    "User-Agent": "PCComparator/0.4.5 (https://github.com/DoctorGreeb/pc-component-comparator; contact via github)",
     "Accept": "application/json",
 }
 
-# кэш в памяти на процесс: norm_query → url | None
 _CACHE: dict[str, str | None] = {}
 
-# SVG-заглушки по категории (data URI) — последний рубеж, чтобы ни один товар не был без картинки
+ImageStatus = Literal["ok", "timeout", "not_found", "error"]
+
 _PLACEHOLDER_SVG = {
     "cpu": (
         '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">'
@@ -98,16 +99,12 @@ _DEFAULT_SVG = (
 
 def placeholder_data_uri(category: str | None = None) -> str:
     svg = _PLACEHOLDER_SVG.get(category or "", _DEFAULT_SVG)
-    # encode for data URI
-    from urllib.parse import quote as q
-
-    return "data:image/svg+xml," + q(svg)
+    return "data:image/svg+xml," + quote(svg)
 
 
 def _clean_query(name: str) -> str:
     s = re.sub(r"[\(\)\[\]\{\}]", " ", name or "")
     s = re.sub(r"\s+", " ", s).strip()
-    # обрезаем слишком длинные маркетинговые хвосты
     parts = s.split()
     if len(parts) > 8:
         s = " ".join(parts[:8])
@@ -115,7 +112,6 @@ def _clean_query(name: str) -> str:
 
 
 async def search_wikimedia(client: httpx.AsyncClient, query: str) -> str | None:
-    """Commons MediaWiki API — без ключа."""
     params = {
         "action": "query",
         "format": "json",
@@ -135,12 +131,9 @@ async def search_wikimedia(client: httpx.AsyncClient, query: str) -> str | None:
         data = resp.json()
         pages = (data.get("query") or {}).get("pages") or []
         for page in pages:
-            infos = page.get("imageinfo") or []
-            for info in infos:
+            for info in page.get("imageinfo") or []:
                 mime = (info.get("mime") or "").lower()
-                if not mime.startswith("image/"):
-                    continue
-                if mime in ("image/svg+xml", "image/gif"):
+                if not mime.startswith("image/") or mime in ("image/svg+xml", "image/gif"):
                     continue
                 url = info.get("thumburl") or info.get("url")
                 if url and url.startswith("http"):
@@ -151,7 +144,6 @@ async def search_wikimedia(client: httpx.AsyncClient, query: str) -> str | None:
 
 
 async def search_openverse(client: httpx.AsyncClient, query: str) -> str | None:
-    """Openverse API — открытые лицензии, без ключа."""
     params = {
         "q": query,
         "page_size": 5,
@@ -161,10 +153,7 @@ async def search_openverse(client: httpx.AsyncClient, query: str) -> str | None:
     try:
         resp = await client.get("https://api.openverse.org/v1/images/", params=params)
         if resp.status_code != 200:
-            # старый хост
-            resp = await client.get(
-                "https://api.openverse.engineering/v1/images/", params=params
-            )
+            resp = await client.get("https://api.openverse.engineering/v1/images/", params=params)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -182,47 +171,78 @@ async def find_image_url(
     *,
     category: str | None = None,
     client: httpx.AsyncClient | None = None,
-) -> str | None:
-    """Ищем картинку в интернете. Результат кэшируется."""
+    timeout_sec: float = 15.0,
+) -> tuple[str | None, ImageStatus, str | None]:
+    """
+    Ищем картинку. Возвращает (url, status, host).
+    status: ok | timeout | not_found | error
+    """
     q = _clean_query(name)
     if not q:
-        return None
+        return None, "not_found", None
     cache_key = f"{category or ''}|{q.lower()}"
     if cache_key in _CACHE:
-        return _CACHE[cache_key]
+        cached = _CACHE[cache_key]
+        if cached:
+            from urllib.parse import urlparse
 
+            return cached, "ok", urlparse(cached).netloc or "cache"
+        return None, "not_found", None
+
+    timeout_sec = max(1.0, min(99.0, float(timeout_sec or 15)))
     own_client = client is None
     if own_client:
-        client = httpx.AsyncClient(timeout=20.0, headers=HEADERS, follow_redirects=True)
+        client = httpx.AsyncClient(
+            timeout=min(timeout_sec, 20.0),
+            headers=HEADERS,
+            follow_redirects=True,
+        )
 
     assert client is not None
-    url: str | None = None
-    try:
-        # 1) Wikimedia
+
+    async def _search() -> str | None:
         url = await search_wikimedia(client, q)
-        # 2) Openverse с уточнением категории
-        if not url:
-            q2 = q
-            cat_hint = {
-                "cpu": "processor CPU",
-                "gpu": "graphics card GPU",
-                "ram": "DDR memory RAM",
-                "motherboard": "motherboard",
-                "ssd": "SSD NVMe",
-                "hdd": "hard disk drive",
-                "psu": "power supply PSU",
-                "case": "PC case chassis",
-                "cooler": "CPU cooler",
-            }.get(category or "", "PC hardware")
-            url = await search_openverse(client, f"{q2} {cat_hint}")
-        if not url:
-            url = await search_openverse(client, q)
-    finally:
+        if url:
+            return url
+        cat_hint = {
+            "cpu": "processor CPU",
+            "gpu": "graphics card GPU",
+            "ram": "DDR memory RAM",
+            "motherboard": "motherboard",
+            "ssd": "SSD NVMe",
+            "hdd": "hard disk drive",
+            "psu": "power supply PSU",
+            "case": "PC case chassis",
+            "cooler": "CPU cooler",
+        }.get(category or "", "PC hardware")
+        url = await search_openverse(client, f"{q} {cat_hint}")
+        if url:
+            return url
+        return await search_openverse(client, q)
+
+    try:
+        url = await asyncio.wait_for(_search(), timeout=timeout_sec)
+    except asyncio.TimeoutError:
         if own_client:
             await client.aclose()
+        return None, "timeout", None
+    except Exception:
+        if own_client:
+            await client.aclose()
+        return None, "error", None
+    finally:
+        if own_client and not client.is_closed:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
     _CACHE[cache_key] = url
-    return url
+    if url:
+        from urllib.parse import urlparse
+
+        return url, "ok", urlparse(url).netloc or "web"
+    return None, "not_found", None
 
 
 async def find_image_or_placeholder(
@@ -230,9 +250,11 @@ async def find_image_or_placeholder(
     *,
     category: str | None = None,
     client: httpx.AsyncClient | None = None,
+    timeout_sec: float = 15.0,
 ) -> str:
-    """Всегда возвращает URL или data:image/svg+xml."""
-    url = await find_image_url(name, category=category, client=client)
+    url, _status, _host = await find_image_url(
+        name, category=category, client=client, timeout_sec=timeout_sec
+    )
     if url:
         return url
     return placeholder_data_uri(category)
