@@ -138,13 +138,13 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                 except Exception as e:
                     notes.append(f"gpu_ark: {e}")
                 if yml_url and str(yml_url).strip():
-                    yield _sse({"pct": 55, "op": "Импорт YML…"})
+                    yield _sse({"pct": 55, "op": "Импорт YML…", "log": "Загрузка YML feed: " + str(yml_url).strip()})
                     try:
                         r3 = await load_yml_feed(db, str(yml_url).strip())
                         total_added += int(r3.get("components_added") or 0)
                     except Exception as e:
                         notes.append(f"yml: {e}")
-                yield _sse({"pct": 70, "op": f"Обогащение (таймаут картинки {image_timeout_sec} с)…"})
+                yield _sse({"pct": 70, "op": f"Обогащение (таймаут картинки {image_timeout_sec} с)…", "log": "Поиск изображений и метаданных · web_images=" + str(web_images) + " · max_web=" + str(max_web_images)})
                 try:
                     import asyncio
                     q: asyncio.Queue = asyncio.Queue()
@@ -161,11 +161,12 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                     while not task.done() or not q.empty():
                         try:
                             msg = await asyncio.wait_for(q.get(), timeout=0.4)
-                            yield _sse({"pct": 78, "op": msg})
+                            yield _sse({"pct": 78, "op": msg, "log": msg})
                         except asyncio.TimeoutError:
                             if task.done():
                                 while not q.empty():
-                                    yield _sse({"pct": 78, "op": await q.get()})
+                                    msg = await q.get()
+                                    yield _sse({"pct": 78, "op": msg, "log": msg})
                                 break
                     enrich = await task
                     notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
