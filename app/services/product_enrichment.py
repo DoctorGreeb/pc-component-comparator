@@ -190,11 +190,16 @@ def _extract_spec_rows(page: str) -> dict[str, str]:
 
     # Product pages frequently store characteristics in JSON-LD / hydration JSON.
     scripts = re.findall(r'(?is)<script[^>]*>(.*?)</script>', page)
+    decoder = json.JSONDecoder()
     for raw in scripts:
-        if len(raw) > 3_000_000 or not raw.strip().startswith(("{", "[")):
+        if len(raw) > 3_000_000:
+            continue
+        # Also handle hydration scripts such as: window.__STATE__ = {...}
+        starts = [position for position in (raw.find("{"), raw.find("[")) if position >= 0]
+        if not starts:
             continue
         try:
-            data = json.loads(raw)
+            data, _ = decoder.raw_decode(raw[min(starts):])
         except Exception:
             continue
         stack = data if isinstance(data, list) else [data]
