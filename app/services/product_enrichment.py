@@ -157,84 +157,271 @@ def _matches_product(title: str, name: str, brand: str | None, model: str | None
     return bool(meaningful) and len(meaningful & title_tokens) >= min(2, len(meaningful))
 
 
+# Common PC / store characteristic labels (RU + EN). Order does not matter;
+# longer labels are preferred when building the regex.
+_KNOWN_SPEC_LABELS = [
+    # CPU / motherboard
+    "Сокет", "Socket", "Чипсет", "Chipset", "Количество ядер", "Общее количество ядер",
+    "Количество потоков", "Максимальная частота", "Базовая частота", "Частота процессора",
+    "Тепловыделение", "TDP", "Техпроцесс", "Кэш L3", "Интегрированная графика",
+    "Тип памяти", "Memory Type", "Поддерживаемая память", "Максимальный объем памяти",
+    "Количество слотов памяти", "Форм-фактор", "Form Factor", "Версия PCI Express",
+    # RAM / storage
+    "Суммарный объем", "Объем", "Capacity", "Тактовая частота", "Frequency",
+    "Тайминги", "Латентность", "CL", "Напряжение", "Модулей в комплекте",
+    "Интерфейс", "Interface", "Тип накопителя", "Скорость чтения", "Скорость записи",
+    "Скорость вращения", "RPM", "Форм-фактор накопителя",
+    # GPU
+    "Графический процессор", "Графический чип", "Объем видеопамяти", "Тип видеопамяти",
+    "Шина памяти", "Частота ядра", "Рекомендуемая мощность БП", "Разъемы питания",
+    "Длина видеокарты", "Количество вентиляторов",
+    # Cooler / case / PSU
+    "Макс. скорость вращения, об/мин", "Макс. воздушный поток, CFM",
+    "Макс. уровень шума, дБ", "Диаметр вентилятора, мм", "Тип подшипника",
+    "Коннектор питания", "Высота кулера", "Совместимые сокеты", "Тип охлаждения",
+    "Мощность", "Wattage", "Сертификат 80 PLUS", "Модульность",
+    "Поддержка материнских плат", "Отсеки 2.5", "Отсеки 3.5",
+    # Generic
+    "Размеры, мм", "Габариты", "Высота, мм", "Ширина, мм", "Глубина, мм",
+    "Вес", "Цвет", "Подсветка", "Особенности", "Гарантия", "Страна-изготовитель",
+    "Артикул", "Модель", "Производитель", "Бренд", "Тип",
+]
+
+_NOISE_KEYS = {
+    "купить", "цена", "наличие", "отзыв", "рейтинг", "доставка", "в корзину",
+    "добавить", "сравнить", "артикул продавца", "id", "sku", "ean", "barcode",
+    "фото", "изображение", "описание", "подробнее", "share", "cookie",
+}
+
+
+def _is_good_spec_pair(key: str, value: str) -> bool:
+    key = (key or "").strip()
+    value = (value or "").strip()
+    if not key or not value:
+        return False
+    if len(key) < 2 or len(key) > 80:
+        return False
+    if len(value) < 1 or len(value) > 220:
+        return False
+    if key.lower() == value.lower():
+        return False
+    kl = key.lower()
+    if any(n in kl for n in _NOISE_KEYS):
+        return False
+    # Reject pure navigation / UI crumbs
+    if re.search(r"https?://|www\.|\.html|\.php", value, re.I):
+        return False
+    if re.fullmatch(r"[\d\s.,]+", key):
+        return False
+    return True
+
+
 def _spec_pairs_from_text(text: str) -> dict[str, str]:
+    """Extract key/value specs from plain text or search snippets."""
     text = unescape(re.sub(r"<[^>]+>", " ", text or ""))
     text = re.sub(r"\s+", " ", text).strip()
     specs: dict[str, str] = {}
-    labels = [
-        "Макс. скорость вращения, об/мин", "Макс. воздушный поток, CFM",
-        "Макс. уровень шума, дБ", "Диаметр вентилятора, мм", "Количество вентиляторов",
-        "Коннектор питания", "Тип подшипника", "Страна-изготовитель", "Количество в упаковке, шт",
-        "Размеры, мм", "Особенности", "Подсветка", "Артикул", "Высота, мм", "Ширина, мм",
-        "Глубина, мм", "Цвет", "Тип",
-    ]
-    label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
-    # Extract known field names up to the next known field, even when snippets omit punctuation.
-    pattern = rf"(?i)(?<![А-ЯЁA-Zа-яёa-z0-9])(?P<key>{label_pattern})\s*:?\s*(?P<value>.*?)(?=\s+(?:{label_pattern})(?:\s|:)|$)"
+
+    # 1) Known labels even without strict separators (common in SERP snippets)
+    label_pattern = "|".join(re.escape(label) for label in sorted(_KNOWN_SPEC_LABELS, key=len, reverse=True))
+    pattern = (
+        rf"(?i)(?<![А-ЯЁA-Zа-яёa-z0-9])(?P<key>{label_pattern})\s*"
+        rf"[:\-–—]?\s*(?P<value>.*?)(?=\s+(?:{label_pattern})(?:\s|[:\-–—])|$)"
+    )
     for match in re.finditer(pattern, text):
         key = match.group("key").strip()
-        value = match.group("value").strip(" .;,:-")
-        if value and len(value) <= 180 and value.lower() != key.lower():
+        value = match.group("value").strip(" .;,:-–—|")
+        if _is_good_spec_pair(key, value):
             specs[key] = value
-    # Also support other clearly-labelled pairs in compact snippets.
+
+    # 2) Generic "Key: Value" / "Key — Value" / "Key - Value"
     for key, value in re.findall(
-        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.-]{2,45})\s*:\s*([^:;|]{1,80})",
+        r"([А-ЯЁA-Z][А-ЯЁA-Zа-яёa-z0-9 /(),.%+-]{1,50}?)\s*[:\-–—]\s*([^:;\n|•·]{1,100})",
         text,
     ):
-        key, value = key.strip(" .:-"), value.strip(" .;,:-")
-        if 2 <= len(key) <= 50 and value and len(value) <= 100:
+        key, value = key.strip(" .:-–—"), value.strip(" .;,:-–—|")
+        if _is_good_spec_pair(key, value):
             specs.setdefault(key, value)
+
+    # 3) Bullet-style "• Key Value" where value starts with digit/unit
+    for key, value in re.findall(
+        r"[•·▪▫]\s*([А-ЯЁA-Za-z][^:•·|]{2,40}?)\s+(\d[\d\s.,/x×*]*(?:\s*[A-Za-zА-Яа-яё%]+)?)",
+        text,
+    ):
+        key, value = key.strip(), (value or "").strip()
+        if value and _is_good_spec_pair(key, value):
+            specs.setdefault(key, value)
+
     return specs
 
-def _extract_spec_rows(page: str) -> dict[str, str]:
+
+def _extract_div_spec_pairs(page: str) -> dict[str, str]:
+    """Div/span based characteristics used by many RU stores (DNS, Citilink, Ozon…)."""
     specs: dict[str, str] = {}
-    # Correct HTML tag-boundary regexes: \b is a regex boundary, not a literal slash.
+    # Pairs of adjacent elements whose class hints at "name/title" + "value"
+    pair_re = re.compile(
+        r"(?is)"
+        r"<(?:div|span|li|dt|td|th)[^>]*class=\"[^\"]*(?:spec|param|characteristic|property|attr|feature)"
+        r"[^\"]*(?:name|title|label|key)[^\"]*\"[^>]*>(.*?)</(?:div|span|li|dt|td|th)>\s*"
+        r"<(?:div|span|li|dd|td|th)[^>]*class=\"[^\"]*(?:spec|param|characteristic|property|attr|feature)"
+        r"[^\"]*(?:value|val|data|text)[^\"]*\"[^>]*>(.*?)</(?:div|span|li|dd|td|th)>"
+    )
+    for key_html, val_html in pair_re.findall(page):
+        key, value = _plain_html(key_html)[:100], _plain_html(val_html)[:300]
+        if _is_good_spec_pair(key, value):
+            specs.setdefault(key, value)
+
+    # data-title / data-name attributes with nearby text value
+    for key, value in re.findall(
+        r'(?is)data-(?:title|name|label)=["\']([^"\']{2,60})["\'][^>]*>([^<]{1,120})<',
+        page,
+    ):
+        key, value = _plain_html(key)[:100], _plain_html(value)[:300]
+        if _is_good_spec_pair(key, value):
+            specs.setdefault(key, value)
+
+    # Microdata / itemprop
+    for key, value in re.findall(
+        r'(?is)itemprop=["\']([^"\']+)["\'][^>]*content=["\']([^"\']+)["\']',
+        page,
+    ):
+        if key.lower() not in {"name", "image", "url", "sku", "price", "availability"}:
+            if _is_good_spec_pair(key, value):
+                specs.setdefault(key[:100], value[:300])
+
+    return specs
+
+
+def _walk_json_for_specs(node: Any, specs: dict[str, str], depth: int = 0) -> None:
+    if depth > 12:
+        return
+    if isinstance(node, dict):
+        # Schema.org Product additionalProperty
+        props = node.get("additionalProperty") or node.get("additionalProperties")
+        if isinstance(props, dict):
+            props = [props]
+        if isinstance(props, list):
+            for prop in props:
+                if isinstance(prop, dict):
+                    key = prop.get("name") or prop.get("propertyID") or prop.get("key") or prop.get("title")
+                    value = prop.get("value") or prop.get("valueReference") or prop.get("displayValue")
+                    if key and value is not None and not isinstance(value, (dict, list)):
+                        k, v = str(key)[:100].strip(), str(value)[:300].strip()
+                        if _is_good_spec_pair(k, v):
+                            specs.setdefault(k, v)
+
+        # Generic key/value shaped objects (DNS/Citilink hydration etc.)
+        key = node.get("name") or node.get("key") or node.get("title") or node.get("label") or node.get("characteristic")
+        value = node.get("value") or node.get("displayValue") or node.get("val") or node.get("text")
+        if key and value is not None and not isinstance(value, (dict, list)):
+            k, v = str(key)[:100].strip(), str(value)[:300].strip()
+            # Prefer objects that look like product attributes
+            if _is_good_spec_pair(k, v) and (
+                "spec" in str(node.get("type", "")).lower()
+                or "char" in str(node.get("type", "")).lower()
+                or node.get("unit") is not None
+                or any(x in k.lower() for x in (
+                    "сокет", "socket", "tdp", "ядер", "памят", "частот", "мощност",
+                    "объем", "интерфейс", "форм", "чипсет", "watt", "core",
+                ))
+            ):
+                specs.setdefault(k, v)
+
+        # Nested dicts that are flat characteristic maps
+        for k, v in node.items():
+            if isinstance(k, str) and not isinstance(v, (dict, list)) and v is not None:
+                if k.lower() in {x.lower() for x in _KNOWN_SPEC_LABELS} or any(
+                    word in k.lower() for word in (
+                        "сокет", "socket", "tdp", "ядер", "памят", "частот", "мощност",
+                        "объем", "интерфейс", "форм-фактор", "чипсет", "watt",
+                    )
+                ):
+                    ks, vs = k[:100].strip(), str(v)[:300].strip()
+                    if _is_good_spec_pair(ks, vs):
+                        specs.setdefault(ks, vs)
+
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                _walk_json_for_specs(v, specs, depth + 1)
+    elif isinstance(node, list):
+        for item in node[:400]:
+            _walk_json_for_specs(item, specs, depth + 1)
+
+
+def _extract_spec_rows(page: str) -> dict[str, str]:
+    """Parse product HTML for characteristic tables / lists / embedded JSON."""
+    specs: dict[str, str] = {}
+
+    # Classic table rows
     for row in re.findall(r"(?is)<tr\b[^>]*>(.*?)</tr>", page):
         cells = re.findall(r"(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>", row)
         if len(cells) >= 2:
             key, value = _plain_html(cells[0])[:100].strip(" :"), _plain_html(cells[1])[:300]
-            if key and value and key.lower() != value.lower():
+            if _is_good_spec_pair(key, value):
                 specs[key] = value
+
+    # Definition lists
     for key, value in re.findall(r"(?is)<dt\b[^>]*>(.*?)</dt>\s*<dd\b[^>]*>(.*?)</dd>", page):
         k, v = _plain_html(key)[:100], _plain_html(value)[:300]
-        if k and v and k.lower() != v.lower():
+        if _is_good_spec_pair(k, v):
             specs.setdefault(k, v)
 
-    # Product pages frequently store characteristics in JSON-LD / hydration JSON.
-    scripts = re.findall(r'(?is)<script[^>]*>(.*?)</script>', page)
+    # Div-based layouts of major marketplaces
+    for k, v in _extract_div_spec_pairs(page).items():
+        specs.setdefault(k, v)
+
+    # JSON-LD / hydration blobs inside <script>
+    scripts = re.findall(r"(?is)<script[^>]*>(.*?)</script>", page)
     decoder = json.JSONDecoder()
     for raw in scripts:
         if len(raw) > 3_000_000:
             continue
-        # Also handle hydration scripts such as: window.__STATE__ = {...}
-        starts = [position for position in (raw.find("{"), raw.find("[")) if position >= 0]
-        if not starts:
-            continue
-        try:
-            data, _ = decoder.raw_decode(raw[min(starts):])
-        except Exception:
-            continue
-        stack = data if isinstance(data, list) else [data]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, dict):
-                props = node.get("additionalProperty") or node.get("additionalProperties") or []
-                if isinstance(props, dict):
-                    props = [props]
-                for prop in props if isinstance(props, list) else []:
-                    if isinstance(prop, dict):
-                        key = prop.get("name") or prop.get("propertyID") or prop.get("key")
-                        value = prop.get("value") or prop.get("valueReference")
-                        if key and value and not isinstance(value, (dict, list)):
-                            specs[str(key)[:100]] = str(value)[:300]
-                key = node.get("name") or node.get("key") or node.get("title")
-                value = node.get("value") or node.get("displayValue")
-                if key and value and not isinstance(value, (dict, list)):
-                    specs[str(key)[:100]] = str(value)[:300]
-                stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
-            elif isinstance(node, list):
-                stack.extend(node)
+        # Prefer scripts that mention characteristics / product
+        low = raw[:2000].lower()
+        if not any(x in low for x in ("characteristic", "spec", "additionalproperty", "product", "param", "attrs")):
+            # Still try short JSON-LD blocks
+            if "application/ld+json" not in low and len(raw) > 80_000:
+                continue
+        # Scan for multiple JSON objects in one script
+        pos = 0
+        while pos < len(raw):
+            start_candidates = [i for i in (raw.find("{", pos), raw.find("[", pos)) if i >= 0]
+            if not start_candidates:
+                break
+            start = min(start_candidates)
+            try:
+                data, end = decoder.raw_decode(raw[start:])
+            except Exception:
+                pos = start + 1
+                continue
+            _walk_json_for_specs(data, specs)
+            pos = start + max(end, 1)
+            if len(specs) >= 40:
+                break
+
+    # Last resort: plain-text pairs from stripped page (helps when markup is unusual)
+    if len(specs) < 3:
+        plain = _plain_html(page)
+        # Limit size for regex performance
+        for k, v in _spec_pairs_from_text(plain[:120_000]).items():
+            specs.setdefault(k, v)
+
     return {k: v for k, v in specs.items() if k and v}
+
+
+_PREFERRED_HOSTS = (
+    "dns-shop.ru", "citilink.ru", "ozon.ru", "wildberries.ru", "mvideo.ru",
+    "technopoint.ru", "regard.ru", "computeruniverse.ru", "pleer.ru",
+    "amd.com", "intel.com", "nvidia.com", "asus.com", "msi.com", "gigabyte.com",
+)
+
+
+def _candidate_priority(url: str) -> int:
+    host = (urlparse(url).netloc or "").lower().replace("www.", "")
+    for i, preferred in enumerate(_PREFERRED_HOSTS):
+        if preferred in host:
+            return i
+    return 100
 
 
 async def search_specs_on_web(name: str, brand: str | None = None, model: str | None = None) -> dict[str, Any] | None:
@@ -242,51 +429,106 @@ async def search_specs_on_web(name: str, brand: str | None = None, model: str | 
     query = _clean_query(" ".join(x for x in (brand, model, name) if x))
     if not query:
         return None
+    model_or_name = model or name
     queries = list(dict.fromkeys([
-        f'"{model or name}" характеристики',
-        f'{query} характеристики',
-        f'site:ozon.ru/product {model or name} характеристики',
-        f'site:dns-shop.ru {model or name} характеристики',
+        f'"{model_or_name}" характеристики',
+        f"{query} характеристики",
+        f"{query} specs",
+        f"site:dns-shop.ru {model_or_name}",
+        f"site:citilink.ru {model_or_name}",
+        f"site:ozon.ru/product {model_or_name}",
+        f"site:regard.ru {model_or_name}",
     ]))
-    headers = {"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
+    headers = {
+        "User-Agent": UA,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
     seen: set[str] = set()
     candidates: list[dict[str, str]] = []
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5), headers=headers, follow_redirects=True) as client:
+    best_snippet: dict[str, Any] | None = None
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(12, connect=5),
+        headers=headers,
+        follow_redirects=True,
+    ) as client:
         for search_query in queries:
             for result in await _search_results(client, search_query):
                 url = result["url"]
-                if url not in seen and _matches_product(result["title"] + " " + result["snippet"], name, brand, model):
-                    seen.add(url)
-                    candidates.append(result)
-                    # First: extract useful fields directly from the search snippet.
-                    snippet_specs = _spec_pairs_from_text(result["snippet"])
-                    if len(snippet_specs) >= 3:
-                        return {"specs": snippet_specs, "source": "search_snippet",
-                                "source_title": result["title"], "source_url": url}
-            if len(candidates) >= 20:
+                if url in seen:
+                    continue
+                blob = f"{result['title']} {result['snippet']}"
+                if not _matches_product(blob, name, brand, model):
+                    continue
+                seen.add(url)
+                candidates.append(result)
+                snippet_specs = _spec_pairs_from_text(result["snippet"])
+                if len(snippet_specs) >= 3:
+                    return {
+                        "specs": snippet_specs,
+                        "source": "search_snippet",
+                        "source_title": result["title"],
+                        "source_url": url,
+                    }
+                if len(snippet_specs) >= 2 and (
+                    best_snippet is None or len(snippet_specs) > len(best_snippet["specs"])
+                ):
+                    best_snippet = {
+                        "specs": snippet_specs,
+                        "source": "search_snippet",
+                        "source_title": result["title"],
+                        "source_url": url,
+                    }
+            if len(candidates) >= 24:
                 break
 
-        # Then open every matching page; do not stop after the first blocked store.
+        # Prefer known store / manufacturer pages
+        candidates.sort(key=lambda r: _candidate_priority(r["url"]))
+
         semaphore = asyncio.Semaphore(6)
 
         async def inspect_candidate(result: dict[str, str]):
             async with semaphore:
                 try:
                     response = await client.get(result["url"])
-                    if response.status_code != 200 or "html" not in response.headers.get("content-type", "").lower():
+                    ctype = response.headers.get("content-type", "").lower()
+                    if response.status_code != 200 or ("html" not in ctype and "text" not in ctype):
                         return None
                     specs = _extract_spec_rows(response.text)
                     if len(specs) >= 3:
-                        return {"specs": specs, "source": "web_page",
-                                "source_title": result["title"], "source_url": str(response.url)}
+                        return {
+                            "specs": specs,
+                            "source": "web_page",
+                            "source_title": result["title"],
+                            "source_url": str(response.url),
+                        }
+                    # Keep weaker page hits as fallback
+                    if len(specs) >= 2:
+                        return {
+                            "specs": specs,
+                            "source": "web_page_weak",
+                            "source_title": result["title"],
+                            "source_url": str(response.url),
+                        }
                 except Exception:
                     return None
             return None
 
         page_results = await asyncio.gather(*(inspect_candidate(item) for item in candidates[:18]))
+        # Prefer full hits, then weak page hits
+        weak = None
         for result in page_results:
-            if result:
+            if not result:
+                continue
+            if result["source"] == "web_page":
                 return result
+            if weak is None:
+                weak = result
+        if weak:
+            return weak
+        if best_snippet:
+            return best_snippet
     return None
 
 
