@@ -57,14 +57,16 @@ export function itemDdr(item: ComponentListItem | null | undefined): string {
 
 /**
  * Поколение памяти по сокету.
- * AM5 → только DDR5; AM4 / LGA1200 / LGA115x → только DDR4.
+ * AM5 → DDR5; AM4 → DDR4. Для Intel сокет сам по себе
+ * не определяет тип памяти: LGA1700 и некоторые LGA1151 платы бывают DDR4/DDR5.
  */
 export function platformDdrFromSocket(socketRaw: string): string {
   const s = normalizeSocket(socketRaw)
   if (!s) return ''
   if (s.includes('am5') || s.includes('str5') || s.includes('sp5')) return 'ddr5'
-  if (s.includes('am4') || s.includes('am3') || s.includes('fm2')) return 'ddr4'
-  if (/lga\s*1200|lga\s*115[015]|lga\s*775|lga\s*2011|trx4|strx4|tr4/.test(s)) return 'ddr4'
+  if (s.includes('am4')) return 'ddr4'
+  // Intel memory generation is board-specific on several sockets; do not guess.
+  if (/lga\s*1200/.test(s)) return 'ddr4'
   return ''
 }
 
@@ -194,8 +196,6 @@ export function checkCompat(build: BuildMap): string[] {
   const cpu = build.cpu
   const mb = build.motherboard
   const ram = build.ram
-  const psu = build.psu
-  const gpu = build.gpu
 
   if (cpu && mb) {
     const sockCpu = itemSocket(cpu)
@@ -226,12 +226,6 @@ export function checkCompat(build: BuildMap): string[] {
       if (ramDdr === 'ddr5') {
         warns.push('Сокет AM4 работает только с DDR4 — DDR5 установить нельзя')
       }
-    }
-  }
-  if (psu && gpu) {
-    const watt = parseInt(specVal(psu, ['Мощность', 'Wattage']).replace(/\D/g, ''), 10)
-    if (watt && watt < 450) {
-      warns.push(`БП ${watt} Вт может быть слабоват для связки с видеокартой`)
     }
   }
   return warns
