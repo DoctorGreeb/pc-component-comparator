@@ -72,17 +72,11 @@ async def enrich_missing_media(
     *,
     web_images: bool = True,
     max_web: int = 80,
-    image_timeout_sec: float = 15.0,
+    image_timeout_sec: float = 8.0,
     google_api_key: str | None = None,
     google_cx: str | None = None,
     on_progress=None,
 ) -> dict[str, int]:
-    """
-    1) Доноры в той же категории.
-    2) Web-поиск для пустых URL и SVG-заглушек (повторный апдейт заменяет заглушки).
-    3) Если ничего — снова SVG.
-    """
-
     async def _prog(msg: str, pct: float | None = None):
         if on_progress is None:
             return
@@ -158,18 +152,17 @@ async def enrich_missing_media(
     db.commit()
 
     if web_images:
-        # Пустые + SVG-заглушки — ищем снова реальные картинки
         need = [
             c for c in db.query(models.Component).all()
             if is_placeholder_url(c.image_url)
         ][:max_web]
-        timeout = max(1.0, min(99.0, float(image_timeout_sec or 15)))
+        timeout = max(2.5, min(20.0, float(image_timeout_sec or 8)))
         await _prog(
-            f"Поиск картинок (Google/DDG/Bing/Wiki/Openverse): "
-            f"{len(need)} без фото или с заглушкой, таймаут {int(timeout)} с…"
+            f"Поиск картинок (Google/DDG/Bing/Wiki): "
+            f"{len(need)} без фото или с заглушкой, таймаут {timeout:.0f} с…"
         )
         async with httpx.AsyncClient(
-            timeout=min(timeout + 2, 25.0),
+            timeout=min(timeout + 1, 12.0),
             headers={
                 "User-Agent": "PCComparator/0.4.8 (+https://github.com/DoctorGreeb/pc-component-comparator)",
                 "Accept": "application/json, text/html, */*",
@@ -180,7 +173,7 @@ async def enrich_missing_media(
                 cat_name = cats.get(c.category_id)
                 short = (c.name or "")[:70]
                 was_placeholder = is_placeholder_url(c.image_url)
-                await _prog(f"[{i}/{len(need)}] Ищем картинку: {short}")
+                await _prog(f"[{i}/{len(need)}] Ищем: {short}")
                 try:
                     url, status, host = await find_image_url(
                         c.name or "",
@@ -195,10 +188,8 @@ async def enrich_missing_media(
 
                 if status == "timeout":
                     timeouts += 1
-                    await _prog(
-                        f"[{i}/{len(need)}] Превышено время поиска картинки ({int(timeout)} с): {short}"
-                    )
-                    await asyncio.sleep(1.8)
+                    await _prog(f"[{i}/{len(need)}] Таймаут {timeout:.0f}с: {short}")
+                    await asyncio.sleep(0.15)
                     if is_placeholder_url(c.image_url):
                         c.image_url = placeholder_data_uri(cat_name)
                         placeholder_filled += 1
@@ -207,14 +198,12 @@ async def enrich_missing_media(
                     web_filled += 1
                     if was_placeholder:
                         placeholders_replaced += 1
-                    await _prog(
-                        f"[{i}/{len(need)}] Успешно загружена картинка ← {host}: {short}"
-                    )
+                    await _prog(f"[{i}/{len(need)}] OK ← {host}: {short}")
                 else:
                     if is_placeholder_url(c.image_url):
                         c.image_url = placeholder_data_uri(cat_name)
                         placeholder_filled += 1
-                    await _prog(f"[{i}/{len(need)}] Картинка не найдена, SVG-заглушка: {short}")
+                    await _prog(f"[{i}/{len(need)}] нет фото → SVG: {short}")
                 if i % 10 == 0:
                     db.commit()
         db.commit()
