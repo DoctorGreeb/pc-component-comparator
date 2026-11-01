@@ -121,21 +121,50 @@ export async function fetchCompare(ids: number[]): Promise<{
   return res.json();
 }
 
-export async function updateDatabase(apiKey?: string): Promise<{
+export async function updateDatabase(
+  apiKey?: string,
+  economy = false,
+): Promise<{
   status: string;
   message: string;
   note?: string;
   components_added: number;
   categories_ready: number;
+  economy?: boolean;
+  credits_exhausted?: boolean;
 }> {
   const res = await fetch(`${API_BASE}/update-database`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(apiKey ? { api_key: apiKey } : {}),
+    body: JSON.stringify({ api_key: apiKey || undefined, economy }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка обновления');
+  }
+  return res.json();
+}
+
+export async function exportCatalog(): Promise<{ count: number; items: unknown[] }> {
+  const res = await fetch(`${API_BASE}/catalog/export`);
+  if (!res.ok) throw new Error('Не удалось экспортировать каталог');
+  return res.json();
+}
+
+export async function importCatalog(items: unknown[]): Promise<{
+  status: string;
+  added: number;
+  updated: number;
+  message: string;
+}> {
+  const res = await fetch(`${API_BASE}/catalog/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Ошибка импорта');
   }
   return res.json();
 }
