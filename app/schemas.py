@@ -66,9 +66,36 @@ class ComponentListItem(BaseModel):
     image_url: Optional[str] = None
     category_id: int
     category_name: Optional[str] = None
+    description: Optional[str] = None
     min_price: Optional[float] = None
-    in_stock: bool = False
+    old_price: Optional[float] = None
+    product_url: Optional[str] = None
+    specs: Optional[dict[str, Any]] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class ComponentsPage(BaseModel):
+    items: list[ComponentListItem]
+    total: int
+    skip: int
+    limit: int
+
+
+class FacetValue(BaseModel):
+    value: str
+    count: int
+
+
+class Facet(BaseModel):
+    key: str
+    values: list[FacetValue]
+
+
+class FacetsResponse(BaseModel):
+    brands: list[FacetValue]
+    specs: list[Facet]
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
 
 
 class UpdateDatabaseRequest(BaseModel):
