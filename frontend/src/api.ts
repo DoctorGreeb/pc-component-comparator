@@ -86,6 +86,24 @@ export interface ProgressEvent {
   error?: string;
 }
 
+export interface ProductReviewSnippet {
+  title: string;
+  snippet: string;
+  url: string;
+  query?: string;
+}
+
+export interface ProductEnrichment {
+  description: string | null;
+  description_source: string | null;
+  description_url: string | null;
+  manufacturer_home: string | null;
+  manufacturer_model_url: string | null;
+  web_search_url: string | null;
+  reviews: ProductReviewSnippet[];
+  reviews_note: string;
+}
+
 export async function fetchCategories(): Promise<Category[]> {
   const res = await fetch(`${API_BASE}/categories`);
   if (!res.ok) throw new Error('Не удалось загрузить категории');
@@ -123,6 +141,24 @@ export async function fetchFacets(category?: string): Promise<FacetsResponse> {
   if (category) search.set('category', category);
   const res = await fetch(`${API_BASE}/facets?${search}`);
   if (!res.ok) throw new Error('Не удалось загрузить фильтры');
+  return res.json();
+}
+
+export async function fetchComponent(id: number): Promise<ComponentDetail> {
+  const res = await fetch(`${API_BASE}/components/${id}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Товар не найден');
+  }
+  return res.json();
+}
+
+export async function fetchProductEnrichment(id: number): Promise<ProductEnrichment> {
+  const res = await fetch(`${API_BASE}/components/${id}/enrich`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Не удалось обогатить карточку');
+  }
   return res.json();
 }
 
