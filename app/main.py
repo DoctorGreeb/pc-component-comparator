@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from typing import Optional
 import json
+import os
 from collections import defaultdict
 from dotenv import load_dotenv
 load_dotenv()
@@ -20,7 +21,18 @@ from app.services.free_loader import (
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="PC Component Comparator", version="0.4.7")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+frontend_origins = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=frontend_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 import_routes.register(app)
 
 DEFAULT_CATEGORIES = [
