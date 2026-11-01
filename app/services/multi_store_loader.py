@@ -280,7 +280,9 @@ async def load_wildberries(
     queries_ok = 0
     errors = 0
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    all_queries = [(cat, query) for cat, queries in queries_map.items() for query in queries if categories.get(cat)]
+    query_index = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=12.0)) as client:
         for cat_name, queries in queries_map.items():
             cat = categories.get(cat_name)
             if not cat:
