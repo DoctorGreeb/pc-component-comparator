@@ -19,7 +19,7 @@ from app.services.free_loader import (
 )
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="PC Component Comparator", version="0.4.6")
+app = FastAPI(title="PC Component Comparator", version="0.4.7")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 import_routes.register(app)
 
@@ -86,7 +86,7 @@ def _component_to_list_item(c):
         min_price=min_p, old_price=old_p, product_url=product_url, specs=_parse_specs(c.specs))
 
 @app.get("/")
-def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.6"}
+def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.7"}
 @app.get("/health")
 def health(): return {"status": "ok"}
 
@@ -102,6 +102,8 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
     image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
     max_web_images = max(0, min(500, int(getattr(body, "max_web_images", None) or 100))) if body else 100
     web_images = bool(getattr(body, "web_images", True)) if body else True
+    google_api_key = (getattr(body, "google_api_key", None) or None) if body else None
+    google_cx = (getattr(body, "google_cx", None) or None) if body else None
     sources = (body.sources if body and body.sources else None) or ["dns", "yandex_market", "wildberries"]
 
     async def generate():
@@ -151,7 +153,9 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                     async def _runner():
                         return await enrich_missing_media(
                             db, web_images=web_images, max_web=max_web_images,
-                            image_timeout_sec=image_timeout_sec, on_progress=_on_prog,
+                            image_timeout_sec=image_timeout_sec,
+                            google_api_key=google_api_key, google_cx=google_cx,
+                            on_progress=_on_prog,
                         )
                     task = asyncio.create_task(_runner())
                     while not task.done() or not q.empty():
@@ -195,7 +199,7 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
                 async def _on_prog2(msg, pct=None):
                     await q.put(msg)
                 async def _runner2():
-                    return await enrich_missing_media(db, web_images=web_images, max_web=max_web_images, image_timeout_sec=image_timeout_sec, on_progress=_on_prog2)
+                    return await enrich_missing_media(db, web_images=web_images, max_web=max_web_images, image_timeout_sec=image_timeout_sec, google_api_key=google_api_key, google_cx=google_cx, on_progress=_on_prog2)
                 task = asyncio.create_task(_runner2())
                 while not task.done() or not q.empty():
                     try:
@@ -226,12 +230,13 @@ async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(N
         if not db.query(models.Store).filter(models.Store.name == store["name"]).first(): db.add(models.Store(**store))
     db.commit()
     total_categories = db.query(models.Category).count()
-    existing_components = db.query(models.Component).count()
     api_key = body.api_key if body else None
     economy = bool(body.economy) if body else False
     free_only = bool(body.free_only) if body else False
     yml_url = body.yml_url if body else None
     image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
+    google_api_key = getattr(body, "google_api_key", None) if body else None
+    google_cx = getattr(body, "google_cx", None) if body else None
     if free_only or not get_api_key(api_key):
         try:
             free_stats = await load_free_sources(db, yml_url=yml_url, image_timeout_sec=image_timeout_sec)
@@ -254,7 +259,7 @@ async def update_database(body: Optional[schemas.UpdateDatabaseRequest] = Body(N
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     try:
-        enrich = await enrich_missing_media(db, web_images=True, max_web=60, image_timeout_sec=image_timeout_sec)
+        enrich = await enrich_missing_media(db, web_images=True, max_web=60, image_timeout_sec=image_timeout_sec, google_api_key=google_api_key, google_cx=google_cx)
         notes.append(f"web={enrich.get('web_filled', 0)} timeouts={enrich.get('timeouts', 0)}")
     except Exception as e:
         notes.append(str(e))
