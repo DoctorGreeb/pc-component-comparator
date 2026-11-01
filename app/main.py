@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func, asc, desc
+from sqlalchemy import or_
 from typing import Optional
 import json
 from collections import defaultdict
@@ -19,7 +19,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="PC Component Comparator",
     description="Сравнение комплектующих ПК с данными DNS",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -48,19 +48,114 @@ DEFAULT_STORES = [
     {"name": "Regard", "url": "https://www.regard.ru"},
 ]
 
-# Ключи характеристик, которые показываем в фильтрах (в порядке приоритета)
-SPEC_FILTER_KEYS = [
-    "Сокет",
-    "Чипсет",
-    "Общее количество ядер",
-    "Тепловыделение",
-    "Тип памяти",
-    "Объем видеопамяти",
-    "Интерфейс",
-    "Форм-фактор",
-    "Мощность",
-    "Сертификат 80 PLUS",
-]
+# Приоритетные ключи фильтров/сравнения по категориям (как в DNS)
+CATEGORY_SPEC_PRIORITY: dict[str, list[str]] = {
+    "cpu": [
+        "Сокет",
+        "Общее количество ядер",
+        "Количество потоков",
+        "Производительные ядра",
+        "Базовая частота",
+        "Максимальная частота",
+        "Кэш L3",
+        "Тепловыделение",
+        "Графика",
+        "Поддержка памяти",
+    ],
+    "gpu": [
+        "Графический процессор",
+        "Графический чип",
+        "Объем видеопамяти",
+        "Тип видеопамяти",
+        "Разрядность шины памяти",
+        "Частота видеочипа",
+        "Частота памяти",
+        "Интерфейс",
+        "Рекомендуемая мощность БП",
+        "Разъемы",
+        "Длина видеокарты",
+        "Толщина",
+        "Количество вентиляторов",
+    ],
+    "motherboard": [
+        "Сокет",
+        "Чипсет",
+        "Форм-фактор",
+        "Тип поддерживаемой памяти",
+        "Количество слотов памяти",
+        "Максимальный объем памяти",
+        "Разъемы M.2",
+        "Слоты расширения",
+        "Сетевой адаптер",
+        "Wi-Fi",
+    ],
+    "ram": [
+        "Тип памяти",
+        "Объем одного модуля",
+        "Суммарный объем",
+        "Тактовая частота",
+        "Тайминги",
+        "Напряжение питания",
+        "Радиатор",
+        "Количество модулей",
+    ],
+    "ssd": [
+        "Объем",
+        "Форм-фактор",
+        "Интерфейс",
+        "Тип",
+        "Скорость чтения",
+        "Скорость записи",
+        "Ресурс TBW",
+        "NVMe",
+    ],
+    "hdd": [
+        "Объем",
+        "Скорость вращения",
+        "Форм-фактор",
+        "Интерфейс",
+        "Кэш-память",
+    ],
+    "psu": [
+        "Мощность",
+        "Сертификат 80 PLUS",
+        "Модульность",
+        "Основной разъем питания",
+        "Разъемы PCI-E",
+        "Разъемы SATA",
+        "Тип PFC",
+    ],
+    "case": [
+        "Форм-фактор",
+        "Поддерживаемые форм-факторы плат",
+        "Отсеки 2.5",
+        "Отсеки 3.5",
+        "Максимальная длина видеокарты",
+        "Максимальная высота кулера",
+        "Блок питания",
+    ],
+    "cooler": [
+        "Тип",
+        "Сокет",
+        "Совместимость с сокетами",
+        "TDP",
+        "Рассеиваемая мощность",
+        "Количество вентиляторов",
+        "Размер радиатора",
+        "Подсветка",
+    ],
+}
+
+# Ключи, которые не показываем в фильтрах «чужих» категорий (шум)
+CATEGORY_SPEC_BLOCK: dict[str, set[str]] = {
+    "gpu": {"Чипсет", "Сокет", "Общее количество ядер", "Производительные ядра"},
+    "cpu": {"Чипсет", "Объем видеопамяти", "Тип видеопамяти", "Графический процессор"},
+    "ram": {"Сокет", "Чипсет", "Объем видеопамяти"},
+    "ssd": {"Сокет", "Чипсет", "Общее количество ядер"},
+    "hdd": {"Сокет", "Чипсет", "Объем видеопамяти"},
+    "psu": {"Сокет", "Чипсет", "Объем видеопамяти"},
+    "case": {"Сокет", "Чипсет", "Объем видеопамяти"},
+}
 
 
 def _parse_specs(raw) -> dict:
@@ -77,10 +172,39 @@ def _parse_specs(raw) -> dict:
     return {}
 
 
+def _priority_keys_for(category: str | None) -> list[str]:
+    if category and category in CATEGORY_SPEC_PRIORITY:
+        return CATEGORY_SPEC_PRIORITY[category]
+    # без категории — объединение топа
+    keys: list[str] = []
+    seen = set()
+    for lst in CATEGORY_SPEC_PRIORITY.values():
+        for k in lst:
+            if k not in seen:
+                seen.add(k)
+                keys.append(k)
+    return keys
+
+
+def _blocked_keys(category: str | None) -> set[str]:
+    if category and category in CATEGORY_SPEC_BLOCK:
+        return CATEGORY_SPEC_BLOCK[category]
+    return set()
+
+
+def _match_priority_key(actual_key: str, priority: list[str]) -> int | None:
+    """Индекс приоритета, если actual_key совпадает или содержит приоритетный ключ."""
+    ak = actual_key.lower()
+    for i, p in enumerate(priority):
+        pl = p.lower()
+        if ak == pl or pl in ak or ak in pl:
+            return i
+    return None
+
+
 def _component_to_list_item(c: models.Component) -> schemas.ComponentListItem:
     prices = [p for p in c.prices if p.price is not None]
     min_p = min((p.price for p in prices), default=None)
-    # old_price с позиции с минимальной ценой
     old_p = None
     product_url = None
     if prices:
@@ -108,7 +232,7 @@ def root():
     return {
         "message": "PC Component Comparator API",
         "status": "ready",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
@@ -166,14 +290,11 @@ def list_categories(db: Session = Depends(get_db)):
 def list_components(
     category: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
-    sort: str = Query("price_asc", description="price_asc | price_desc | name_asc | name_desc"),
-    brand: Optional[str] = Query(None, description="Бренд или несколько через запятую"),
+    sort: str = Query("price_asc"),
+    brand: Optional[str] = Query(None),
     price_min: Optional[float] = Query(None),
     price_max: Optional[float] = Query(None),
-    spec: Optional[list[str]] = Query(
-        None,
-        description="Фильтр характеристик: key:value (можно несколько)",
-    ),
+    spec: Optional[list[str]] = Query(None),
     skip: int = 0,
     limit: int = Query(48, le=120),
     db: Session = Depends(get_db),
@@ -200,13 +321,10 @@ def list_components(
     if brand:
         brands = [b.strip() for b in brand.split(",") if b.strip()]
         if brands:
-            query = query.filter(
-                or_(*[models.Component.brand.ilike(b) for b in brands])
-            )
+            query = query.filter(or_(*[models.Component.brand.ilike(b) for b in brands]))
 
     components = query.all()
 
-    # Фильтры по цене и specs — в Python (specs в JSON-тексте)
     filtered: list[models.Component] = []
     spec_filters: list[tuple[str, str]] = []
     if spec:
@@ -227,8 +345,13 @@ def list_components(
         specs = _parse_specs(c.specs)
         ok = True
         for sk, sv in spec_filters:
-            val = str(specs.get(sk, ""))
-            if sv.lower() not in val.lower():
+            # гибкое совпадение ключа
+            matched_val = ""
+            for actual_k, actual_v in specs.items():
+                if actual_k == sk or sk.lower() in actual_k.lower() or actual_k.lower() in sk.lower():
+                    matched_val = str(actual_v)
+                    break
+            if sv.lower() not in matched_val.lower():
                 ok = False
                 break
         if not ok:
@@ -246,7 +369,6 @@ def list_components(
             return (name,)
         if sort == "name_desc":
             return (name,)
-        # price_asc default
         return (min_p is None, min_p or 0, name)
 
     if sort == "name_desc":
@@ -257,7 +379,6 @@ def list_components(
     total = len(filtered)
     page = filtered[skip : skip + limit]
     items = [_component_to_list_item(c) for c in page]
-
     return schemas.ComponentsPage(items=items, total=total, skip=skip, limit=limit)
 
 
@@ -273,7 +394,11 @@ def get_facets(
 
     brand_counts: dict[str, int] = defaultdict(int)
     spec_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    key_freq: dict[str, int] = defaultdict(int)
     prices: list[float] = []
+
+    blocked = _blocked_keys(category)
+    priority = _priority_keys_for(category)
 
     for c in components:
         if c.brand:
@@ -282,16 +407,49 @@ def get_facets(
             if p.price is not None:
                 prices.append(p.price)
         specs = _parse_specs(c.specs)
-        for key in SPEC_FILTER_KEYS:
-            if key in specs and specs[key]:
-                spec_counts[key][str(specs[key])] += 1
+        for key, val in specs.items():
+            if not val or key in blocked:
+                continue
+            key_freq[key] += 1
+            spec_counts[key][str(val)] += 1
+
+    # Выбираем ключи: сначала приоритетные, которые реально есть, потом частые
+    chosen_keys: list[str] = []
+    used = set()
+
+    for pkey in priority:
+        # найти реальный ключ в данных
+        match = None
+        for actual in key_freq:
+            if actual in used or actual in blocked:
+                continue
+            idx = _match_priority_key(actual, [pkey])
+            if idx is not None:
+                match = actual
+                break
+        if match:
+            chosen_keys.append(match)
+            used.add(match)
+
+    # добить часто встречающимися (не в blocklist)
+    for key, _cnt in sorted(key_freq.items(), key=lambda x: -x[1]):
+        if key in used or key in blocked:
+            continue
+        if len(chosen_keys) >= 8:
+            break
+        # не больше 25 уникальных значений — иначе бесполезный фильтр
+        if len(spec_counts[key]) > 40:
+            continue
+        chosen_keys.append(key)
+        used.add(key)
 
     brands = [
         schemas.FacetValue(value=k, count=v)
         for k, v in sorted(brand_counts.items(), key=lambda x: (-x[1], x[0]))
     ]
+
     facets = []
-    for key in SPEC_FILTER_KEYS:
+    for key in chosen_keys:
         vals = spec_counts.get(key) or {}
         if not vals:
             continue
@@ -300,7 +458,7 @@ def get_facets(
                 key=key,
                 values=[
                     schemas.FacetValue(value=k, count=v)
-                    for k, v in sorted(vals.items(), key=lambda x: (-x[1], x[0]))[:30]
+                    for k, v in sorted(vals.items(), key=lambda x: (-x[1], x[0]))[:25]
                 ],
             )
         )
@@ -358,7 +516,6 @@ def compare_components(
     if len(components) != len(id_list):
         raise HTTPException(status_code=404, detail="Один или несколько компонентов не найдены")
 
-    # сохранить порядок как в запросе
     by_id = {c.id: c for c in components}
     ordered = [by_id[i] for i in id_list if i in by_id]
 
@@ -369,17 +526,30 @@ def compare_components(
     for c in ordered:
         c.specs = _parse_specs(c.specs)
 
-    # собрать все ключи характеристик
+    cat_name = ordered[0].category.name if ordered[0].category else None
+    priority = _priority_keys_for(cat_name)
+    blocked = _blocked_keys(cat_name)
+
     all_keys: list[str] = []
     seen = set()
     for c in ordered:
         for k in (c.specs or {}):
-            if k not in seen:
-                seen.add(k)
-                all_keys.append(k)
+            if k in blocked or k in seen:
+                continue
+            seen.add(k)
+            all_keys.append(k)
+
+    # сортировка ключей: приоритетные сверху, остальные по алфавиту
+    def key_rank(k: str):
+        m = _match_priority_key(k, priority)
+        if m is not None:
+            return (0, m, k.lower())
+        return (1, 999, k.lower())
+
+    all_keys.sort(key=key_rank)
 
     return {
-        "category": ordered[0].category.name if ordered[0].category else None,
+        "category": cat_name,
         "category_ru": ordered[0].category.name_ru if ordered[0].category else None,
         "spec_keys": all_keys,
         "components": ordered,
