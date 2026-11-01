@@ -100,7 +100,7 @@ async def update_database_stream(body: Optional[schemas.UpdateDatabaseRequest] =
     free_only = bool(body.free_only) if body else False
     yml_url = body.yml_url if body else None
     image_timeout_sec = max(1, min(99, int(getattr(body, "image_timeout_sec", None) or 15))) if body else 15
-    max_web_images = max(0, min(500, int(getattr(body, "max_web_images", None) or 100))) if body else 100
+    max_web_images = max(0, min(500, int(getattr(body, "max_web_images", 100) if getattr(body, "max_web_images", None) is not None else 100))) if body else 100
     web_images = bool(getattr(body, "web_images", True)) if body else True
     google_api_key = (getattr(body, "google_api_key", None) or None) if body else None
     google_cx = (getattr(body, "google_cx", None) or None) if body else None
@@ -284,7 +284,7 @@ def list_categories(db: Session = Depends(get_db)):
 @app.get("/components", response_model=schemas.ComponentsPage)
 def list_components(category: Optional[str] = Query(None), q: Optional[str] = Query(None), sort: str = Query("price_asc"),
     brand: Optional[str] = Query(None), price_min: Optional[float] = Query(None), price_max: Optional[float] = Query(None),
-    spec: Optional[list[str]] = Query(None), skip: int = 0, limit: int = Query(48, le=120), db: Session = Depends(get_db)):
+    spec: Optional[list[str]] = Query(None), skip: int = Query(0, ge=0), limit: int = Query(48, ge=1, le=120), db: Session = Depends(get_db)):
     query = db.query(models.Component).options(joinedload(models.Component.category), joinedload(models.Component.prices))
     if category: query = query.join(models.Category).filter(models.Category.name == category)
     if q:
@@ -299,6 +299,10 @@ def list_components(category: Optional[str] = Query(None), q: Optional[str] = Qu
         for s in spec:
             if ":" in s:
                 k, v = s.split(":", 1); spec_filters.append((k.strip(), v.strip()))
+    grouped_spec_filters = defaultdict(list)
+    for key, value in spec_filters:
+        grouped_spec_filters[key].append(value)
+
     for c in components:
         prices = [p.price for p in c.prices if p.price is not None]
         min_p = min(prices) if prices else None
@@ -306,12 +310,20 @@ def list_components(category: Optional[str] = Query(None), q: Optional[str] = Qu
         if price_max is not None and (min_p is None or min_p > price_max): continue
         specs = _parse_specs(c.specs)
         ok = True
-        for sk, sv in spec_filters:
-            matched_val = ""
-            for actual_k, actual_v in specs.items():
-                if actual_k == sk or sk.lower() in actual_k.lower() or actual_k.lower() in sk.lower():
-                    matched_val = str(actual_v); break
-            if sv.lower() not in matched_val.lower(): ok = False; break
+        for requested_key, requested_values in grouped_spec_filters.items():
+            # Exact key wins; fuzzy matching is only a fallback for inconsistent source labels.
+            actual_key = requested_key if requested_key in specs else next(
+                (key for key in specs if requested_key.lower() in key.lower() or key.lower() in requested_key.lower()),
+                None,
+            )
+            if actual_key is None:
+                ok = False
+                break
+            actual_value = str(specs.get(actual_key, "")).lower()
+            # Multiple values of one facet are alternatives (OR); different facets remain AND.
+            if not any(value.lower() in actual_value for value in requested_values):
+                ok = False
+                break
         if ok: filtered.append(c)
     def sort_key(c):
         prices = [p.price for p in c.prices if p.price is not None]
@@ -363,9 +375,9 @@ def get_component(component_id: int, db: Session = Depends(get_db)):
 
 @app.get("/compare")
 def compare_components(ids: str = Query(...), db: Session = Depends(get_db)):
-    try: id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
+    try: id_list = list(dict.fromkeys(int(x.strip()) for x in ids.split(",") if x.strip()))
     except ValueError: raise HTTPException(status_code=400, detail="Некорректный формат ids")
-    if len(id_list) < 2 or len(id_list) > 4: raise HTTPException(status_code=400, detail="Нужно 2–4")
+    if len(id_list) < 2 or len(id_list) > 4: raise HTTPException(status_code=400, detail="Нужно 2–4 разных компонента")
     components = db.query(models.Component).options(joinedload(models.Component.category), joinedload(models.Component.prices).joinedload(models.Price.store)).filter(models.Component.id.in_(id_list)).all()
     if len(components) != len(id_list): raise HTTPException(status_code=404, detail="Не найдены")
     by_id = {c.id: c for c in components}
