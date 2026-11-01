@@ -4,19 +4,19 @@ import { fetchCompare, ComponentDetail, formatPrice } from '../api'
 import './ComparePage.css'
 
 function getMinPrice(c: ComponentDetail): number | null {
-  const prices = c.prices.map((p) => p.price).filter((p): p is number => p != null)
+  const prices = c.prices.filter((p) => p.in_stock).map((p) => p.price).filter((p): p is number => p != null)
   return prices.length ? Math.min(...prices) : null
 }
 
 function getOldPrice(c: ComponentDetail): number | null {
-  const withPrice = c.prices.filter((p) => p.price != null)
+  const withPrice = c.prices.filter((p) => p.in_stock && p.price != null)
   if (!withPrice.length) return null
   const best = withPrice.reduce((a, b) => ((a.price ?? 0) <= (b.price ?? 0) ? a : b))
   return best.old_price
 }
 
 function getProductUrl(c: ComponentDetail): string | null {
-  return c.prices.find((p) => p.product_url)?.product_url || null
+  return c.prices.find((p) => p.in_stock && p.product_url)?.product_url || null
 }
 
 function specVal(c: ComponentDetail, key: string): string {
@@ -42,8 +42,6 @@ const HIGHER_BETTER = [
   'кэш',
   'памят',
   'скорост',
-  'мощност',
-  'tdp',
   'ресурс',
   'tbw',
   'разрядн',
@@ -85,6 +83,8 @@ export function ComparePage() {
       return
     }
 
+    setError(null)
+    setData(null)
     setLoading(true)
     fetchCompare(ids)
       .then(setData)
