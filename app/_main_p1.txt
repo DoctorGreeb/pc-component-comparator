@@ -1,0 +1,106 @@
+from fastapi import FastAPI, Depends, HTTPException, Query, Body
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_
+from typing import Optional
+import json
+from collections import defaultdict
+from dotenv import load_dotenv
+load_dotenv()
+from app.database import engine, get_db, Base
+from app import models, schemas
+from app.services.dns_loader import load_dns_catalog, get_api_key, CreditsExhaustedError
+from app.services.multi_store_loader import load_extra_stores
+from app.services import import_routes
+from app.services.free_loader import (
+    load_free_sources, enrich_missing_media,
+    load_pcpart_dataset, load_gpu_ark, load_yml_feed,
+)
+
+Base.metadata.create_all(bind=engine)
+app = FastAPI(title="PC Component Comparator", version="0.4.8")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+import_routes.register(app)
+
+DEFAULT_CATEGORIES = [
+    {"name": "cpu", "name_ru": "Процессоры"}, {"name": "gpu", "name_ru": "Видеокарты"},
+    {"name": "motherboard", "name_ru": "Материнские платы"}, {"name": "ram", "name_ru": "Оперативная память"},
+    {"name": "ssd", "name_ru": "SSD накопители"}, {"name": "hdd", "name_ru": "HDD накопители"},
+    {"name": "psu", "name_ru": "Блоки питания"}, {"name": "case", "name_ru": "Корпуса"},
+    {"name": "cooler", "name_ru": "Системы охлаждения"},
+]
+DEFAULT_STORES = [
+    {"name": "DNS", "url": "https://www.dns-shop.ru"},
+    {"name": "Яндекс Маркет", "url": "https://market.yandex.ru"},
+    {"name": "Wildberries", "url": "https://www.wildberries.ru"},
+    {"name": "Citilink", "url": "https://www.citilink.ru"},
+    {"name": "Regard", "url": "https://www.regard.ru"},
+]
+CATEGORY_SPEC_PRIORITY = {
+    "cpu": ["Сокет", "Общее количество ядер", "Количество потоков", "Базовая частота", "Максимальная частота", "Тепловыделение"],
+    "gpu": ["Графический процессор", "Графический чип", "Объем видеопамяти", "Тип видеопамяти", "Интерфейс"],
+    "motherboard": ["Сокет", "Чипсет", "Форм-фактор"], "ram": ["Тип памяти", "Суммарный объем", "Тактовая частота"],
+    "ssd": ["Объем", "Интерфейс"], "hdd": ["Объем", "Скорость вращения"], "psu": ["Мощность"],
+    "case": ["Форм-фактор"], "cooler": ["Тип", "TDP"],
+}
+CATEGORY_SPEC_BLOCK = {
+    "gpu": {"Чипсет", "Сокет", "Общее количество ядер", "Количество потоков", "Базовая частота", "Максимальная частота", "Тепловыделение", "Тип памяти", "Суммарный объем", "Тактовая частота", "Количество ядер", "Потоки"},
+    "cpu": {"Чипсет", "Объем видеопамяти", "Тип видеопамяти", "Графический процессор", "Графический чип", "Интерфейс", "Тип памяти", "Суммарный объем", "Скорость вращения"},
+    "ram": {"Сокет", "Чипсет", "Объем видеопамяти", "Графический процессор", "Общее количество ядер", "Количество потоков", "Тепловыделение"},
+    "motherboard": {"Объем видеопамяти", "Графический процессор", "Общее количество ядер", "Количество потоков", "Тип видеопамяти"},
+    "ssd": {"Сокет", "Чипсет", "Объем видеопамяти", "Общее количество ядер", "Тип памяти", "Тактовая частота", "Тепловыделение"},
+    "hdd": {"Сокет", "Чипсет", "Объем видеопамяти", "Тип памяти", "Общее количество ядер", "Тактовая частота"},
+    "psu": {"Сокет", "Чипсет", "Объем видеопамяти", "Тип памяти", "Общее количество ядер", "Тактовая частота"},
+    "case": {"Сокет", "Чипсет", "Объем видеопамяти", "Тип памяти", "Общее количество ядер"},
+    "cooler": {"Объем видеопамяти", "Тип памяти", "Чипсет", "Графический процессор", "Суммарный объем"},
+}
+
+def _parse_specs(raw):
+    if not raw: return {}
+    if isinstance(raw, dict): return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except Exception: return {}
+    return {}
+
+def _priority_keys_for(category):
+    if category and category in CATEGORY_SPEC_PRIORITY: return CATEGORY_SPEC_PRIORITY[category]
+    keys, seen = [], set()
+    for lst in CATEGORY_SPEC_PRIORITY.values():
+        for k in lst:
+            if k not in seen: seen.add(k); keys.append(k)
+    return keys
+
+def _blocked_keys(category):
+    return CATEGORY_SPEC_BLOCK.get(category or "", set())
+
+def _match_priority_key(actual_key, priority):
+    ak = actual_key.lower()
+    for i, p in enumerate(priority):
+        pl = p.lower()
+        if ak == pl or pl in ak or ak in pl: return i
+    return None
+
+def _component_to_list_item(c):
+    prices = [p for p in c.prices if p.price is not None]
+    min_p = min((p.price for p in prices), default=None)
+    old_p = product_url = None
+    if prices:
+        best = min(prices, key=lambda p: p.price if p.price is not None else 1e18)
+        old_p, product_url = best.old_price, best.product_url
+    return schemas.ComponentListItem(id=c.id, name=c.name, brand=c.brand, model=c.model, image_url=c.image_url,
+        category_id=c.category_id, category_name=c.category.name if c.category else None, description=c.description,
+        min_price=min_p, old_price=old_p, product_url=product_url, specs=_parse_specs(c.specs))
+
+@app.get("/")
+def root(): return {"message": "PC Component Comparator API", "status": "ready", "version": "0.4.8"}
+@app.get("/health")
+def health(): return {"status": "ok"}
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# PART1_CONTINUES_IN_P2
