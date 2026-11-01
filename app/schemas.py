@@ -100,9 +100,10 @@ class FacetsResponse(BaseModel):
 
 class UpdateDatabaseRequest(BaseModel):
     api_key: Optional[str] = Field(None, description="ReefAPI key (ak_live_...)")
-    economy: bool = Field(
-        False,
-        description="Экономный режим: меньше запросов, если кредиты на исходе",
+    economy: bool = Field(False, description="Экономный режим")
+    sources: Optional[list[str]] = Field(
+        None,
+        description="Источники: dns, yandex_market, wildberries. По умолчанию все.",
     )
 
 
