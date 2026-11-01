@@ -141,7 +141,7 @@ async def _search_results(client: httpx.AsyncClient, query: str) -> list[dict[st
 def _model_codes(*values: str | None) -> set[str]:
     text = " ".join(v or "" for v in values).upper()
     codes = re.findall(r"(?<![A-Z0-9])[A-Z]{1,8}[- ]?[A-Z0-9]{2,}(?:[- ][A-Z0-9]{1,8})?(?![A-Z0-9])", text)
-    return {re.sub(r"[^A-Z0-9]", "", code) for code in codes if len(re.sub(r"[^A-Z0-9]", "", code)) >= 4}
+    return {normalized for code in codes if any(ch.isdigit() for ch in code) for normalized in [re.sub(r"[^A-Z0-9]", "", code)] if len(normalized) >= 4}
 
 
 def _matches_product(title: str, name: str, brand: str | None, model: str | None) -> bool:
