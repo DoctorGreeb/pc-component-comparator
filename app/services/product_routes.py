@@ -2,14 +2,13 @@
 import json
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models
-from app.services.product_enrichment import enrich_product_page
+from app.services.product_enrichment import enrich_product_page, search_specs_on_web
 from app.services.dns_loader import get_api_key, reef_search
-from app.services.product_enrichment import search_specs_on_web
 
 router = APIRouter()
 
