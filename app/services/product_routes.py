@@ -77,9 +77,8 @@ async def find_component_specs(component_id: int, db: Session = Depends(get_db))
             detail="Поиск характеристик сейчас недоступен: на сервере не настроен ключ ReefAPI.",
         )
 
-    query = " ".join(x for x in [component.brand, component.model, component.name] if x)
+    query = component.name
     try:
-        from app.database import SessionLocal
         import httpx
         async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
             results = await reef_search(client, api_key, query[:180], page=1)
